@@ -4,8 +4,6 @@
 
 // --- Types ---
 
-export type ModelProviderType = 'cloud' | 'local';
-
 export type AssistantMode = 'launcher' | 'overlay' | 'undetectable' | string;
 
 export type AnalyticsEventName =
@@ -17,26 +15,14 @@ export type AnalyticsEventName =
     | 'assistant_started'
     | 'assistant_stopped'
     | 'mode_selected'
-    | 'copy_answer_clicked'
     | 'calendar_connected'
     | 'pdf_exported'
     // Meeting Lifecycle
     | 'meeting_started'
     | 'meeting_ended'
-    // Model Usage
-    | 'model_used'
     // Session
     | 'session_duration'
-    // Engagement
-    | 'command_executed'
-    | 'conversation_started';
-
-interface ModelUsedPayload {
-    model_name: string;
-    provider_type: ModelProviderType;
-    latency_ms: number;
-    tokens_used?: number;
-}
+    ;
 
 interface SessionDurationPayload {
     duration_seconds: number;
@@ -55,29 +41,6 @@ declare global {
         dataLayer: any[];
         gtag: (...args: any[]) => void;
     }
-}
-
-// --- Provider Detection ---
-
-/** Detect if a model is running locally (Ollama) or in the cloud */
-export function detectProviderType(modelName: string): ModelProviderType {
-    const lower = modelName.toLowerCase();
-    // Ollama / local model patterns
-    if (
-        lower.startsWith('ollama:') ||
-        lower.includes('llama') ||
-        lower.includes('mistral') ||
-        lower.includes('codellama') ||
-        lower.includes('phi') ||
-        lower.includes('deepseek') ||
-        lower.includes('qwen') ||
-        lower.includes('vicuna') ||
-        lower.includes('orca')
-    ) {
-        return 'local';
-    }
-    // Cloud models (Gemini, GPT, Claude, Groq)
-    return 'cloud';
 }
 
 // --- Service ---
@@ -176,27 +139,6 @@ class AnalyticsService {
         if (!this.initialized) return;
 
         this.trackEvent('mode_selected', { mode });
-    }
-
-    public trackModelUsed(payload: ModelUsedPayload): void {
-        if (!this.initialized) return;
-
-        this.trackEvent('model_used', payload);
-    }
-
-    public trackCopyAnswer(): void {
-        if (!this.initialized) return;
-        this.trackEvent('copy_answer_clicked');
-    }
-
-    public trackCommandExecuted(commandType: string): void {
-        if (!this.initialized) return;
-        this.trackEvent('command_executed', { command_type: commandType });
-    }
-
-    public trackConversationStarted(): void {
-        if (!this.initialized) return;
-        this.trackEvent('conversation_started');
     }
 
     public trackCalendarConnected(): void {

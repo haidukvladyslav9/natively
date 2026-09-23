@@ -162,7 +162,7 @@ export class WindowHelper {
   // state): true (default, safe) = window interactive; false = pointer is
   // over a transparent margin → click-through. See syncOverlayInteractionPolicy.
   private overlayHoverInteractive = true;
-  // ── Overlay popover (settings / model-selector dropdown) coordination ───
+  // ── Overlay settings-popover coordination ───────────────────────────────
   // Which overlay-anchored popovers are currently open. Non-empty → the
   // click-catcher window is shown so a click ANYWHERE outside Natively's
   // windows dismisses them (the app's did-resign-active close path is dead in
@@ -1369,7 +1369,7 @@ export class WindowHelper {
     this.togglePanelRight = clamped;
     this.positionToggleWindow();
     // The panel's left margin moved too (symmetric growth) — any open
-    // settings/model-selector dropdown is anchored to the PANEL, so it rides
+    // the settings dropdown is anchored to the panel, so it rides
     // the width spring exactly like the toggle does.
     this.repositionOverlayPopovers();
   }
@@ -1382,7 +1382,7 @@ export class WindowHelper {
     return Math.max(0, WindowHelper.OVERLAY_DEFAULT_WIDTH - this.togglePanelRight);
   }
 
-  // Re-anchor any open overlay popovers (settings / model-selector) to the
+  // Re-anchor the settings popover to the
   // overlay's current bounds + live panel margin. Called on overlay
   // move/resize and on every panel-width anchor update.
   private repositionOverlayPopovers(): void {
@@ -1392,32 +1392,26 @@ export class WindowHelper {
     const bounds = overlay.getBounds();
     const margin = this.getOverlayPanelLeftMargin();
     this.appState.settingsWindowHelper?.repositionForOverlay?.(bounds, margin);
-    this.appState.modelSelectorWindowHelper?.repositionForOverlay?.(bounds, margin);
     // Keep the catcher covering the display the overlay lives on (drag across
     // displays while a popover is open).
     this.syncPopoverCatcher();
   }
 
-  // Called by SettingsWindowHelper / ModelSelectorWindowHelper whenever an
-  // overlay-anchored popover opens or closes. Drives the click-catcher.
-  public notifyOverlayPopover(kind: 'settings' | 'model', open: boolean): void {
+  // Called by SettingsWindowHelper when its overlay-anchored popover opens or
+  // closes. Drives the click-catcher.
+  public notifyOverlayPopover(kind: 'settings', open: boolean): void {
     const before = this.overlayPopoversOpen.size;
     if (open) this.overlayPopoversOpen.add(kind);
     else this.overlayPopoversOpen.delete(kind);
     if (this.overlayPopoversOpen.size !== before || open) this.syncPopoverCatcher();
   }
 
-  // Close both dropdowns (catcher click, aux-window click, overlay hide).
+  // Close the settings dropdown (catcher click, aux-window click, overlay hide).
   public dismissOverlayPopovers(opts?: { settings?: boolean; model?: boolean }): void {
     const closeSettings = opts?.settings !== false;
-    const closeModel = opts?.model !== false;
     if (closeSettings) {
       const w = this.appState.settingsWindowHelper?.getSettingsWindow();
       if (w && !w.isDestroyed() && w.isVisible()) this.appState.settingsWindowHelper.closeWindow();
-    }
-    if (closeModel) {
-      const w = this.appState.modelSelectorWindowHelper?.getWindow();
-      if (w && !w.isDestroyed() && w.isVisible()) this.appState.modelSelectorWindowHelper.hideWindow();
     }
   }
 
@@ -1456,7 +1450,6 @@ export class WindowHelper {
       this.pillWindow,
       this.toggleWindow,
       this.appState.settingsWindowHelper?.getSettingsWindow?.(),
-      this.appState.modelSelectorWindowHelper?.getWindow?.(),
     ]) {
       if (w && !w.isDestroyed() && w.isVisible()) {
         try {

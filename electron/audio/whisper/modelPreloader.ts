@@ -42,15 +42,10 @@ import {
 // the new local-whisper-reset-to-default IPC.
 const RECENT_FAILURE_TTL_MS = 5 * 60 * 1000;
 
-// Cross-launch disk sentinel: re-exports of the generalized module keyed on
-// the 'whisper' family. The original `WhisperLoadSentinel` type is preserved
-// as a structural superset of the generalized record, so call sites and the
-// existing `WhisperLoadSentinel.test.mjs` keep compiling without changes.
-// `family` is widened to the full `OnnxFamily` union so the generalized
-// module's return type assigns cleanly into this alias.
-import type { OnnxFamily } from '../../utils/onnxLoadSentinel';
+// Cross-launch disk sentinel: Whisper-specific shims keep the worker lifecycle
+// isolated from the persistence primitive.
 export type WhisperLoadSentinel = {
-    family: OnnxFamily;
+    family: 'whisper';
     modelId: string;
     startedAt: number;
     attempt: number;
@@ -92,10 +87,7 @@ function saveRecentFailures(m: Map<string, number>): void {
     }
 }
 
-// Whisper-family thin shims over the generalized module so existing call
-// sites in `electron/main.ts` and `electron/audio/LocalWhisperSTT.ts` keep
-// working byte-identically. New families wire the generalized primitives
-// directly (no shim).
+// Whisper-specific shims keep call sites focused on model IDs.
 export function writeLoadSentinel(modelId: string): void {
     writeOnnxLoadSentinel('whisper', modelId);
 }

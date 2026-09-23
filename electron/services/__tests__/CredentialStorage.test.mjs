@@ -93,19 +93,18 @@ test('CredentialsManager exposes isPersistenceAvailable for the STT-key save gua
 
 test('STT key IPC handlers warn on the ACTUAL write result, not a capability probe', () => {
   const source = read('electron/ipcHandlers.ts');
-  assert.match(source, /const sttKeyPersistenceWarning/);
+  assert.match(source, /const saveSttKey/);
   // The guard must branch on the real persisted boolean (`!persisted`), NOT on
   // isPersistenceAvailable() — a capability probe can't see a disk-write failure,
   // which is how the original false-"Saved" bug slipped through.
-  const guardStart = source.indexOf('const sttKeyPersistenceWarning');
+  const guardStart = source.indexOf('const saveSttKey');
   const guardBlock = source.slice(guardStart, guardStart + 700);
-  assert.match(guardBlock, /apiKey: string, persisted: boolean/);
-  assert.match(guardBlock, /apiKey\.trim\(\)\.length > 0 && !persisted/);
+  assert.match(guardBlock, /const persisted = setter\(key\)/);
+  assert.match(guardBlock, /persisted === false && key\.trim\(\)/);
   assert.doesNotMatch(guardBlock, /isPersistenceAvailable\(\)/,
     'guard must use the real write result, not the capability probe');
 
-  // Every STT key save handler must capture the setter's boolean and pass it to
-  // the guard, so a failed disk write surfaces a real error instead of "Saved".
+  // Every STT key save handler must delegate to the persistence-aware helper.
   const handlers = [
     'set-groq-stt-api-key',
     'set-openai-stt-api-key',
@@ -114,15 +113,14 @@ test('STT key IPC handlers warn on the ACTUAL write result, not a capability pro
     'set-azure-api-key',
     'set-ibmwatson-api-key',
     'set-soniox-api-key',
+    'set-nvidia-nim-api-key',
   ];
   for (const id of handlers) {
     const start = source.indexOf(`'${id}'`);
     assert.ok(start >= 0, `${id} handler should exist`);
-    const block = source.slice(start, start + 1000);
-    assert.match(block, /const persisted = CredentialsManager\.getInstance\(\)\.set\w+\(apiKey\)/,
-      `${id} should capture the setter's persisted result`);
-    assert.match(block, /sttKeyPersistenceWarning\(apiKey, persisted\) \?\? \{ success: true \}/,
-      `${id} should return the persistence-aware result`);
+    const block = source.slice(start, start + 250);
+    assert.match(block, /saveSttKey\(k => CredentialsManager\.getInstance\(\)\.set\w+\(k\), key\)/,
+      `${id} should use the persistence-aware save helper`);
   }
 });
 
@@ -131,6 +129,7 @@ test('STT key setters return the saveCredentials() boolean (not void)', () => {
   const setters = [
     'setDeepgramApiKey', 'setGroqSttApiKey', 'setOpenAiSttApiKey',
     'setElevenLabsApiKey', 'setAzureApiKey', 'setIbmWatsonApiKey', 'setSonioxApiKey',
+    'setNvidiaNimApiKey',
   ];
   for (const name of setters) {
     const re = new RegExp(`public ${name}\\(key: string\\): boolean`);
@@ -170,7 +169,7 @@ test('CredentialsManager emits a privacy-safe storage-status diagnostic at start
 
 test('STT save-failure path emits the storage-status diagnostic for correlation', () => {
   const source = read('electron/ipcHandlers.ts');
-  const guardStart = source.indexOf('const sttKeyPersistenceWarning');
+  const guardStart = source.indexOf('const saveSttKey');
   const guardBlock = source.slice(guardStart, guardStart + 700);
   // The failure branch (after the persistence check) must emit the diagnostic
   // so the failure can be correlated with the environment.
@@ -180,7 +179,6 @@ test('STT save-failure path emits the storage-status diagnostic for correlation'
 test('SettingsManager does not log full settings JSON', () => {
   const source = read('electron/services/SettingsManager.ts');
 
-  assert.match(source, /Settings loaded successfully', \{ keys: Object\.keys\(this\.settings\)\.length \}/);
   assert.doesNotMatch(source, /JSON\.stringify\(this\.settings\)/);
   assert.doesNotMatch(source, /console\.(?:log|warn|error)\([^\n]*,\s*this\.settings\s*[),]/);
   assert.doesNotMatch(source, /console\.(?:log|warn|error)\([^\n]*,\s*parsed\s*[),]/);

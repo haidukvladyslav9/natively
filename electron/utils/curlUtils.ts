@@ -1,42 +1,5 @@
-import curl2Json from "@bany/curl-to-json";
 import fs from "node:fs";
 import path from "node:path";
-
-export interface CurlValidationResult {
-    isValid: boolean;
-    message?: string;
-    json?: any;
-}
-
-/**
- * Validates if the cURL command is parseable and contains required variables
- */
-export const validateCurl = (curl: string): CurlValidationResult => {
-    if (!curl || !curl.trim()) {
-        return { isValid: false, message: "Command cannot be empty." };
-    }
-
-    if (!curl.trim().toLowerCase().startsWith("curl")) {
-        return { isValid: false, message: "Command must start with 'curl'." };
-    }
-
-    try {
-        const json = curl2Json(curl);
-
-        // Ensure {{TEXT}} is present so we can inject the prompt
-        // We check the raw string for the placeholder because it might be in url, header, or body
-        if (!curl.includes("{{TEXT}}")) {
-            return {
-                isValid: false,
-                message: "Your cURL must contain {{TEXT}} placeholder for the prompt."
-            };
-        }
-
-        return { isValid: true, json };
-    } catch (error) {
-        return { isValid: false, message: "Invalid cURL syntax." };
-    }
-};
 
 /**
  * Replaces {{KEY}} placeholders with actual values

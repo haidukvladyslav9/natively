@@ -214,7 +214,7 @@ test.after(() => { Module._load = origLoad; });
  * Tests below pin the contract end-to-end against real disk I/O. 18 tests
  * total: 7 in the per-provider round-trip loop, plus 11 named contracts
  * (empty-string + whitespace clear, setSttProvider round-trip + write-failure,
- * dispatcher, source guards x4, plus M-2 LLM key parity x2).
+ * dispatcher, source guards, and legacy encrypted-JSON compatibility.
  *
  * The IPC integration of the sentinel mechanism is in a separate file:
  *   electron/services/__tests__/TestSttConnectionSentinel.test.mjs
@@ -352,64 +352,60 @@ test('STT key setter source normalizes empty string to undefined (P2 source guar
   }
 });
 
-test('LLM key setter source normalizes empty string to undefined (M-2 follow-up — matches STT pattern)', () => {
-  const src = fs.readFileSync(
-    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../CredentialsManager.ts'),
-    'utf8',
-  );
-  // The 4 LLM key setters that originally stored `''` verbatim. setNativelyApiKey
-  // and setDeepseekApiKey already had the trim pattern before this work.
-  const LLM_KEY_SETTERS = ['setGeminiApiKey', 'setGroqApiKey', 'setOpenaiApiKey', 'setClaudeApiKey'];
-  for (const setter of LLM_KEY_SETTERS) {
-    const idx = src.indexOf(`public ${setter}(`);
-    assert.ok(idx >= 0, `${setter} must exist in source`);
-    const end = src.indexOf('\n    public ', idx + 1);
-    const body = end > idx ? src.slice(idx, end) : src.slice(idx, idx + 500);
-    assert.match(
-      body,
-      /trimmed\s*\|\|\s*undefined/,
-      `${setter} must normalize empty input to undefined (M-2 follow-up to STT key setters)`,
-    );
-  }
-});
-
-test('LLM key setters: empty-string resave clears the stored key (M-2 behavioral)', () => {
+test('legacy encrypted JSON retains STT/auth fields and ignores removed fields', () => {
   const env = makeEnv();
-  env.state.keyringAvailable = false;
+  env.state.keyringAvailable = true;
+  const retained = {
+    googleServiceAccountPath: '/legacy/path/service-account.json',
+    sttProvider: 'deepgram',
+    nvidiaNimApiKey: 'nvapi-retained',
+    nvidiaNimSttModel: 'nemotron-retained',
+    groqSttApiKey: 'gsk-retained',
+    groqSttModel: 'whisper-retained',
+    openAiSttApiKey: 'sk-openai-retained',
+    openAiSttBaseUrl: 'https://speech.example.test/v1',
+    deepgramApiKey: 'sk-retained-deepgram',
+    elevenLabsApiKey: 'sk-eleven-retained',
+    azureApiKey: 'sk-azure-retained',
+    azureRegion: 'westus2',
+    ibmWatsonApiKey: 'sk-ibm-retained',
+    ibmWatsonRegion: 'eu-de',
+    sonioxApiKey: 'sk-soniox-retained',
+    sttLanguage: 'german',
+    nativelyApiKey: 'natively-retained',
+    trialToken: 'trial-retained',
+  };
+  const legacy = {
+    ...retained,
+    geminiApiKey: 'removed-gemini',
+    codexOAuthTokens: { accessToken: 'removed', refreshToken: 'removed', expiresAt: 1 },
+    futureUnknownField: { nested: true },
+  };
+  fs.writeFileSync(
+    path.join(env.userData, 'credentials.enc'),
+    env.fakeElectron.safeStorage.encryptString(JSON.stringify(legacy)),
+  );
 
   const cm = freshManager(env);
-  cm.setGeminiApiKey('AIza-real-gemini-LIVE-1234567890');
-  assert.equal(cm.getGeminiApiKey(), 'AIza-real-gemini-LIVE-1234567890');
-
-  // User cleared the field (or it was a programmatic '' call from a future IPC).
-  cm.setGeminiApiKey('');
-  const cm2 = freshManager(env);
-  assert.equal(cm2.getGeminiApiKey(), undefined, 'empty resave must clear the persisted LLM key');
+  assert.deepEqual(cm.getAllCredentials(), retained);
+  assert.equal('geminiApiKey' in cm.getAllCredentials(), false);
+  assert.equal('codexOAuthTokens' in cm.getAllCredentials(), false);
+  assert.equal('futureUnknownField' in cm.getAllCredentials(), false);
 });
 
-test('local-whisper is in the set-stt-provider IPC + preload + types unions (P4 contract)', () => {
+test('local-whisper remains accepted by the retained STT provider contract', () => {
   const ipc = fs.readFileSync(
     path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../ipcHandlers.ts'),
     'utf8',
   );
   // The handler signature must include 'local-whisper'.
-  const handlerStart = ipc.indexOf("safeHandle(\n    'set-stt-provider'");
+  const handlerStart = ipc.indexOf("handle('set-stt-provider'");
   assert.ok(handlerStart >= 0, 'set-stt-provider IPC handler must exist');
-  const handlerEnd = ipc.indexOf("safeHandle(", handlerStart + 1);
+  const handlerEnd = ipc.indexOf("\n  handle(", handlerStart + 1);
   const handlerBlock = handlerEnd > handlerStart ? ipc.slice(handlerStart, handlerEnd) : ipc.slice(handlerStart, handlerStart + 1500);
-  assert.match(handlerBlock, /'local-whisper'/, 'set-stt-provider IPC handler union must include local-whisper');
-
-  const preload = fs.readFileSync(
-    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../preload.ts'),
-    'utf8',
-  );
-  assert.match(preload, /'local-whisper'/, 'preload setSttProvider union must include local-whisper');
-
-  const types = fs.readFileSync(
-    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../src/types/electron.d.ts'),
-    'utf8',
-  );
-  assert.match(types, /setSttProvider[^]*'local-whisper'/, 'electron.d.ts setSttProvider union must include local-whisper');
+  assert.match(handlerBlock, /provider: SttProvider/, 'set-stt-provider handler must use the shared IPC provider type');
+  assert.match(ipc.slice(0, handlerStart), /type SttProvider[\s\S]*?'local-whisper'/,
+    'the shared IPC provider type must include local-whisper');
 });
 
 test('SettingsOverlay sends USE_STORED sentinel when input empty but key on disk (P1 renderer guard)', () => {

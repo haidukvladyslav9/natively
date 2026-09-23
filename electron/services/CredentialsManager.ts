@@ -31,54 +31,24 @@ const DECRYPT_FAIL_PATH = path.join(app.getPath('userData'), 'credentials.decryp
 const PROVENANCE_PATH = path.join(app.getPath('userData'), 'credentials.provenance.json');
 const DECRYPT_FAIL_PERMANENT_THRESHOLD = 3;
 
-export interface CustomProvider {
-    id: string;
-    name: string;
-    curlCommand: string;
-    /**
-     * Whether this provider can accept screenshots. When undefined, vision
-     * support is auto-detected from the cURL template (an `{{IMAGE_BASE64}}`
-     * placeholder, or an OpenAI-compatible `messages` body). Set explicitly to
-     * override the guess. See customProviderSupportsVision().
-     */
-    multimodal?: boolean;
-    /** True if this provider's endpoint is loopback/local (skips cloud-scope gating). */
-    localOnly?: boolean;
-}
-
-export interface CurlProvider {
-    id: string;
-    name: string;
-    curlCommand: string;
-    responsePath: string; // e.g. "choices[0].message.content"
-}
-
-/**
- * Providers that carry a per-provider default model. Every member must have a
- * matching `<provider>PreferredModel` field on StoredCredentials — the getter
- * and setter build the key by concatenation, so adding a name here without the
- * field would silently read and write `undefined`.
- */
-export type PreferredModelProvider = 'gemini' | 'groq' | 'openai' | 'claude' | 'deepseek' | 'nvidia_nim' | 'litellm';
+export type SttProvider =
+    | 'none'
+    | 'google'
+    | 'groq'
+    | 'openai'
+    | 'deepgram'
+    | 'elevenlabs'
+    | 'azure'
+    | 'ibmwatson'
+    | 'soniox'
+    | 'nvidia_nim'
+    | 'natively'
+    | 'local-whisper';
 
 export interface StoredCredentials {
-    geminiApiKey?: string;
-    groqApiKey?: string;
-    openaiApiKey?: string;
-    claudeApiKey?: string;
-    deepseekApiKey?: string;
-    nvidiaNimApiKey?: string;
-    litellmApiKey?: string;
-    litellmBaseURL?: string;
-    /** Manual output ceiling for LiteLLM-proxied models. Unset → Auto (per-model via /model/info). */
-    litellmMaxTokens?: number;
     googleServiceAccountPath?: string;
-    customProviders?: CustomProvider[];
-    curlProviders?: CurlProvider[];
-    defaultModel?: string;
-    nativelyApiKey?: string;
-    // STT Provider settings
-    sttProvider?: 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'nvidia_nim' | 'natively' | 'local-whisper';
+    sttProvider?: SttProvider;
+    nvidiaNimApiKey?: string;
     nvidiaNimSttModel?: string;
     groqSttApiKey?: string;
     groqSttModel?: string;
@@ -94,110 +64,10 @@ export interface StoredCredentials {
     ibmWatsonRegion?: string;
     sonioxApiKey?: string;
     sttLanguage?: string;
-    aiResponseLanguage?: string;
-    // Tavily Search
-    tavilyApiKey?: string;
-    // Dynamic Model Discovery – preferred models per provider
-    geminiPreferredModel?: string;
-    groqPreferredModel?: string;
-    openaiPreferredModel?: string;
-    claudePreferredModel?: string;
-    deepseekPreferredModel?: string;
-    nvidia_nimPreferredModel?: string;
-    /**
-     * The LiteLLM model the user promoted to this provider's default, stored
-     * PREFIXED (`litellm/<model>`) so it is the same id the picker, the
-     * allow-list and modelAvailable() all compare against — an unprefixed name
-     * here would make those surfaces disagree.
-     *
-     * Cleared whenever the proxy is removed or repointed: a default naming a
-     * model on the old host is worse than none, because routing would fall back
-     * to something that no longer exists.
-     */
-    litellmPreferredModel?: string;
-    /**
-     * Provider ids the user switched off in Settings → AI Providers. A disabled
-     * provider keeps its stored credential but contributes no models to the
-     * picker and is never chosen as a routing fallback.
-     */
-    disabledProviders?: string[];
-    /**
-     * Per-provider allow-list of model ids that may appear in the picker, keyed
-     * by provider id. Absent or EMPTY means "no filter" — every model that
-     * provider offers stays selectable. There is deliberately no "none" value:
-     * hiding a provider entirely is what `disabledProviders` is for, so no
-     * sentinel model id ever reaches persisted state.
-     *
-     * EXCEPTION — OPT-IN providers (currently LiteLLM only): there an empty list
-     * means NOTHING is selected. Those providers front an upstream's entire
-     * catalogue (300+ models is normal for a gateway), so defaulting to "all"
-     * floods the picker with models nobody chose. The selection is explicit, and
-     * a full selection is stored as the full explicit id list — never folded back
-     * to [], which would read as "none" and silently deselect everything.
-     *
-     * Still no sentinel: "none" is the natural empty list, not a magic id. The
-     * rule lives in isModelAllowed() (src/utils/modelUtils.ts) and is mirrored by
-     * modelAvailable() in ipcHandlers.ts.
-     */
-    cloudEnabledModels?: Record<string, string[]>;
-    /**
-     * Last-known model list discovered from the configured LiteLLM proxy.
-     * Cached so the model picker can render without a network round-trip —
-     * discovery is an explicit user action (`refresh-litellm-models`).
-     */
-    litellmModels?: string[];
-    /**
-     * Per-provider model catalog, as last discovered from that provider's API.
-     * Persisted because the allow-list below references these ids: without it the
-     * catalog dies on a settings-tab switch and the stored allow-list would point
-     * at models the card can no longer render.
-     */
-    cloudFetchedModels?: Record<string, { id: string; label: string }[]>;
-    /** When each provider's catalog was last fetched (epoch ms), for staleness. */
-    cloudFetchedAt?: Record<string, number>;
-    // Free trial state
-    trialToken?: string;   // server-issued signed token (natively_trial_…)
-    trialExpiresAt?: string;   // ISO timestamp — local copy for startup check
-    trialStartedAt?: string;   // ISO timestamp
-    trialClaimed?: boolean;  // set true on first claim, never cleared — hides start card permanently
-    /**
-     * Companion-extension pairing token. LOOPBACK-SCOPED — only the extension uses
-     * it, over 127.0.0.1, and it never travels the wire off-box. Persisted
-     * (encrypted via safeStorage) so the extension pairs ONCE and survives
-     * restarts; regenerated only on a deliberate "Rotate token". Kept SEPARATE from
-     * the phone token: the phone token is exposed in a plaintext-HTTP LAN QR when
-     * exposeOnLan is on, so sharing one secret would let a sniffed LAN token reach
-     * the extension's /dom capture capability. See PhoneMirrorService + CONTRACT.md.
-     *
-     * (Field name retained for backward-compat with already-persisted credentials.)
-     */
-    phoneMirrorToken?: string;
-    /**
-     * ChatGPT Codex OAuth tokens. Persisted (encrypted via safeStorage) so the
-     * user only signs in once per device. Written by CodexOAuthService on a
-     * successful PKCE callback+exchange and on each refresh-token rotation;
-     * cleared on signOut or on permanent refresh failure (invalid_grant).
-     * Shape: { accessToken, refreshToken, idToken?, expiresAt, email?, accountId? }.
-     */
-    codexOAuthTokens?: {
-        accessToken: string;
-        refreshToken: string;
-        idToken?: string;
-        expiresAt: number;
-        email?: string;
-        accountId?: string;
-        /**
-         * Epoch ms of the last successful token exchange (initial login OR
-         * refresh). Used by the 8-day proactive re-auth check: OpenAI may
-         * silently invalidate refresh tokens that have been aging in storage
-         * for too long, and the result is a sudden `invalid_grant` mid-use.
-         * Tracking the last-exchange time lets us clear credentials and
-         * prompt the user to re-auth BEFORE the user hits a broken call.
-         * Mirrors open-sse `trackRefreshAt: true` + `maxRefreshAgeMs:
-         * 691200000` (8 days) at codex.md:1167 / 1329.
-         */
-        lastRefreshAt?: number;
-    };
+    /** Used only by NativelyProSTT authentication. */
+    nativelyApiKey?: string;
+    /** Server-issued token used only by NativelyProSTT trial authentication. */
+    trialToken?: string;
 }
 
 export class CredentialsManager {
@@ -212,8 +82,8 @@ export class CredentialsManager {
      *
      * This is the load→save half of the guard. Skipping the boot-time migrate-up
      * is not enough on its own: `saveCredentials()` writes the WHOLE credential
-     * object, so the first ordinary write of a degraded session (a Codex OAuth
-     * refresh, any settings write) would re-encrypt an empty-or-partial object
+     * object, so the first ordinary settings write would re-encrypt an
+     * empty-or-partial object
      * over the intact keyring file and destroy every stored key. The failure is
      * silent and unrecoverable when no fallback exists.
      *
@@ -265,6 +135,49 @@ export class CredentialsManager {
         // Load on construction after app ready
     }
 
+    /**
+     * Accept retained fields from legacy encrypted JSON and discard everything
+     * else. This keeps existing STT/auth data readable without carrying removed
+     * LLM-generation credentials forward on the next save.
+     */
+    private static normalizeCredentialSet(value: unknown): StoredCredentials {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+        const source = value as Record<string, unknown>;
+        const result: StoredCredentials = {};
+        const stringFields: (keyof StoredCredentials)[] = [
+            'googleServiceAccountPath',
+            'nvidiaNimApiKey',
+            'nvidiaNimSttModel',
+            'groqSttApiKey',
+            'groqSttModel',
+            'openAiSttApiKey',
+            'openAiSttBaseUrl',
+            'deepgramApiKey',
+            'elevenLabsApiKey',
+            'azureApiKey',
+            'azureRegion',
+            'ibmWatsonApiKey',
+            'ibmWatsonRegion',
+            'sonioxApiKey',
+            'sttLanguage',
+            'nativelyApiKey',
+            'trialToken',
+        ];
+        for (const field of stringFields) {
+            if (typeof source[field] === 'string') {
+                (result as Record<string, unknown>)[field] = source[field];
+            }
+        }
+        const validProviders: SttProvider[] = [
+            'none', 'google', 'groq', 'openai', 'deepgram', 'elevenlabs',
+            'azure', 'ibmwatson', 'soniox', 'nvidia_nim', 'natively', 'local-whisper',
+        ];
+        if (validProviders.includes(source.sttProvider as SttProvider)) {
+            result.sttProvider = source.sttProvider as SttProvider;
+        }
+        return result;
+    }
+
     public static getInstance(): CredentialsManager {
         // Instance anchored on globalThis (22 dist bundles carry a copy of this
         // class). The nasty direction is key DELETION: with per-bundle
@@ -297,8 +210,8 @@ export class CredentialsManager {
      * it, so `this.credentials` does not reflect what is stored.
      *
      * Call this before any startup self-heal that PERSISTS a single field —
-     * main.ts's GOOGLE_APPLICATION_CREDENTIALS write, PhoneMirror's ext-token
-     * mint. Those write one key into an otherwise-empty credential set, which is
+     * for example main.ts's GOOGLE_APPLICATION_CREDENTIALS write. Such writes
+     * put one key into an otherwise-empty credential set, which is
      * non-empty and so sails past saveCredentials()'s own guard, replacing the
      * recoverable store with a one-field object. The guard has to live at the
      * call site because only the call site knows the write is opportunistic
@@ -346,7 +259,9 @@ export class CredentialsManager {
                 ? safeStorage.decryptString(fs.readFileSync(CREDENTIALS_PATH))
                 : decryptCredentialBlob(fs.readFileSync(FALLBACK_PATH), this.getFallbackKey());
             const parsed = JSON.parse(raw);
-            return (typeof parsed === 'object' && parsed !== null) ? parsed : null;
+            return (typeof parsed === 'object' && parsed !== null)
+                ? CredentialsManager.normalizeCredentialSet(parsed)
+                : null;
         } catch {
             return null;
         }
@@ -618,83 +533,13 @@ export class CredentialsManager {
     // Getters
     // =========================================================================
 
-    public getGeminiApiKey(): string | undefined {
-        return this.credentials.geminiApiKey;
-    }
-
-    public getGroqApiKey(): string | undefined {
-        return this.credentials.groqApiKey;
-    }
-
-    public getOpenaiApiKey(): string | undefined {
-        return this.credentials.openaiApiKey;
-    }
-
-    public getClaudeApiKey(): string | undefined {
-        return this.credentials.claudeApiKey;
-    }
-
-    public getDeepseekApiKey(): string | undefined {
-        return this.credentials.deepseekApiKey;
-    }
-
     public getNvidiaNimApiKey(): string | undefined { return this.credentials.nvidiaNimApiKey; }
-
-    /** Persisted loopback-scoped companion-extension token (stable across restarts). */
-    public getPhoneMirrorToken(): string | undefined {
-        return this.credentials.phoneMirrorToken;
-    }
-
-    /**
-     * Persisted ChatGPT Codex OAuth tokens. Read by CodexOAuthService.getAccessToken()
-     * to refresh-and-retry on a 401 from the Codex API. Returns a defensive deep
-     * copy so callers can't mutate the stored bundle by accident.
-     */
-    public getCodexOAuthTokens(): { accessToken: string; refreshToken: string; idToken?: string; expiresAt: number; email?: string; accountId?: string; lastRefreshAt?: number } | null {
-        const t = this.credentials.codexOAuthTokens;
-        if (!t || typeof t.accessToken !== 'string' || typeof t.refreshToken !== 'string') return null;
-        return { ...t };
-    }
-
-    public setCodexOAuthTokens(tokens: { accessToken: string; refreshToken: string; idToken?: string; expiresAt: number; email?: string; accountId?: string; lastRefreshAt?: number }): void {
-        // ChatGPT OAuth ROTATES the refresh token on every refresh. If we accept
-        // a rotation in memory but fail to persist it, the session keeps working
-        // off CodexOAuthService's own cache and the loss only surfaces at the
-        // next launch as an invalid_grant re-auth. Refuse up front instead.
-        if (this.refuseWriteWhileDegraded('set Codex OAuth tokens')) return;
-        this.credentials.codexOAuthTokens = { ...tokens };
-        this.saveCredentials();
-        console.log('[CredentialsManager] Codex OAuth tokens updated');
-    }
-
-    public clearCodexOAuthTokens(): void {
-        if (this.refuseWriteWhileDegraded('clear Codex OAuth tokens')) return;
-        this.credentials.codexOAuthTokens = undefined;
-        this.saveCredentials();
-        console.log('[CredentialsManager] Codex OAuth tokens cleared');
-    }
-
-    public getLitellmApiKey(): string | undefined {
-        return this.credentials.litellmApiKey;
-    }
-
-    public getLitellmBaseURL(): string | undefined {
-        return this.credentials.litellmBaseURL;
-    }
-
-    public getLitellmMaxTokens(): number | undefined {
-        return this.credentials.litellmMaxTokens;
-    }
 
     public getGoogleServiceAccountPath(): string | undefined {
         return this.credentials.googleServiceAccountPath;
     }
 
-    public getCustomProviders(): CustomProvider[] {
-        return this.credentials.customProviders || [];
-    }
-
-    public getSttProvider(): 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'nvidia_nim' | 'natively' | 'local-whisper' {
+    public getSttProvider(): SttProvider {
         const provider = this.credentials.sttProvider || 'none';
         // Self-heal: if provider is 'none' but a Natively key exists, the user is in a
         // broken state (key cleared then re-entered via a path that skipped auto-promote,
@@ -769,87 +614,12 @@ export class CredentialsManager {
         return this.credentials.sonioxApiKey;
     }
 
-    public getTavilyApiKey(): string | undefined {
-        return this.credentials.tavilyApiKey;
-    }
-
     public getSttLanguage(): string {
         return this.credentials.sttLanguage || 'english-us';
     }
 
-    public getAiResponseLanguage(): string {
-        return this.credentials.aiResponseLanguage || 'auto';
-    }
-    public getDefaultModel(): string {
-        // Default to Flash-Lite: ~0.65s first-token vs ~2.3s for full Flash on
-        // the same prompt (measured), and faster output streaming — the
-        // Cluely-class interactive latency target. Full Flash / Pro remain
-        // user-selectable for harder problems.
-        return this.credentials.defaultModel || 'gemini-3.1-flash-lite';
-    }
-
     public getNativelyApiKey(): string | undefined {
         return this.credentials.nativelyApiKey;
-    }
-
-    public getDisabledProviders(): string[] {
-        return this.credentials.disabledProviders || [];
-    }
-
-    public setDisabledProviders(providers: string[]): void {
-        if (this.refuseWriteWhileDegraded('set disabled providers')) return;
-        this.credentials.disabledProviders = providers;
-        this.saveCredentials();
-        console.log(`[CredentialsManager] Disabled providers updated (${providers.length})`);
-    }
-
-    /** Empty array means "no filter" — all of this provider's models are allowed. */
-    public getCloudEnabledModels(provider: string): string[] {
-        return this.credentials.cloudEnabledModels?.[provider] || [];
-    }
-
-    public setCloudEnabledModels(provider: string, models: string[]): boolean {
-        if (this.refuseWriteWhileDegraded('set cloud enabled models')) return false;
-        if (!this.credentials.cloudEnabledModels) this.credentials.cloudEnabledModels = {};
-        this.credentials.cloudEnabledModels[provider] = models;
-        const persisted = this.saveCredentials();
-        console.log(`[CredentialsManager] Enabled models for ${provider}: ${models.length || 'all'}`);
-        return persisted;
-    }
-
-    /** Cached LiteLLM proxy model ids. Empty until a discovery has succeeded. */
-    public getCloudFetchedModels(provider: string): { id: string; label: string }[] {
-        return this.credentials.cloudFetchedModels?.[provider] || [];
-    }
-
-    public getAllCloudFetchedModels(): Record<string, { id: string; label: string }[]> {
-        return this.credentials.cloudFetchedModels || {};
-    }
-
-    public getCloudFetchedAt(): Record<string, number> {
-        return this.credentials.cloudFetchedAt || {};
-    }
-
-    public setCloudFetchedModels(provider: string, models: { id: string; label: string }[], fetchedAt: number): boolean {
-        if (this.refuseWriteWhileDegraded('set cloud fetched models')) return false;
-        if (!this.credentials.cloudFetchedModels) this.credentials.cloudFetchedModels = {};
-        if (!this.credentials.cloudFetchedAt) this.credentials.cloudFetchedAt = {};
-        this.credentials.cloudFetchedModels[provider] = models;
-        this.credentials.cloudFetchedAt[provider] = fetchedAt;
-        const persisted = this.saveCredentials();
-        console.log(`[CredentialsManager] Cached ${models.length} model(s) for ${provider}`);
-        return persisted;
-    }
-
-    public getLitellmModels(): string[] {
-        return this.credentials.litellmModels || [];
-    }
-
-    public setLitellmModels(models: string[]): void {
-        if (this.refuseWriteWhileDegraded('set litellm models')) return;
-        this.credentials.litellmModels = models;
-        this.saveCredentials();
-        console.log(`[CredentialsManager] LiteLLM model cache updated (${models.length} model(s))`);
     }
 
     public getAllCredentials(): StoredCredentials {
@@ -857,142 +627,16 @@ export class CredentialsManager {
     }
 
     // =========================================================================
-    // Vision provider availability — used by the vision-first screen pipeline
-    // =========================================================================
-
-    /**
-     * True if at least one configured provider is vision-capable.
-     * Used by ScreenUnderstandingService to gate vision_only / decide fallback.
-     */
-    public anyVisionProviderConfigured(): boolean {
-        if (this.credentials.nativelyApiKey) return true;       // Natively API supports vision
-        if (this.credentials.openaiApiKey) return true;          // gpt-4o / gpt-5 vision
-        if (this.credentials.claudeApiKey) return true;          // Claude vision
-        if (this.credentials.geminiApiKey) return true;          // Gemini vision
-        if (this.credentials.groqApiKey) return true;            // Groq qwen3.6-27b vision
-        // Custom providers: only count if they have screenshots scope AND multimodal flag
-        const custom = this.credentials.customProviders || [];
-        if (custom.some(p => (p as any)?.multimodal === true)) return true;
-        return this.anyLocalVisionProviderConfigured();
-    }
-
-    /**
-     * True if at least one LOCAL vision provider is configured (Ollama vision model,
-     * Codex CLI with vision support, or a local-only custom provider).
-     * Used by private_vision mode to enforce no cloud-vision calls.
-     */
-    public anyLocalVisionProviderConfigured(): boolean {
-        // Ollama: caller verifies the configured model is vision-capable via modelCapabilities.
-        // Here we only assert the runtime is configured — model gating happens in the chain.
-        const ollamaBaseUrl = (this.credentials as any).ollamaBaseUrl as string | undefined;
-        if (ollamaBaseUrl && ollamaBaseUrl.trim().length > 0) return true;
-        // Codex CLI is local in normal install — capability is verified by ProviderRouter.
-        const codexCliPath = (this.credentials as any).codexCliPath as string | undefined;
-        if (codexCliPath && codexCliPath.trim().length > 0) return true;
-        return false;
-    }
-
-    // =========================================================================
     // Setters (auto-save)
     // =========================================================================
 
-    public setGeminiApiKey(key: string): void {
-        if (this.refuseWriteWhileDegraded('set gemini api key')) return;
-        const trimmed = (key || '').trim();
-        this.credentials.geminiApiKey = trimmed || undefined;
-        this.saveCredentials();
-        console.log('[CredentialsManager] Gemini API Key updated');
-    }
-
-    public setGroqApiKey(key: string): void {
-        if (this.refuseWriteWhileDegraded('set groq api key')) return;
-        const trimmed = (key || '').trim();
-        this.credentials.groqApiKey = trimmed || undefined;
-        this.saveCredentials();
-        console.log('[CredentialsManager] Groq API Key updated');
-    }
-
-    public setOpenaiApiKey(key: string): void {
-        if (this.refuseWriteWhileDegraded('set openai api key')) return;
-        const trimmed = (key || '').trim();
-        this.credentials.openaiApiKey = trimmed || undefined;
-        this.saveCredentials();
-        console.log('[CredentialsManager] OpenAI API Key updated');
-    }
-
-    public setClaudeApiKey(key: string): void {
-        if (this.refuseWriteWhileDegraded('set claude api key')) return;
-        const trimmed = (key || '').trim();
-        this.credentials.claudeApiKey = trimmed || undefined;
-        this.saveCredentials();
-        console.log('[CredentialsManager] Claude API Key updated');
-    }
-
-    public setDeepseekApiKey(key: string): void {
-        if (this.refuseWriteWhileDegraded('set deepseek api key')) return;
-        const trimmed = key.trim();
-        this.credentials.deepseekApiKey = trimmed || undefined;
-        this.saveCredentials();
-        console.log('[CredentialsManager] DeepSeek API Key updated');
-    }
-
-    public setNvidiaNimApiKey(key: string): void {
-        if (this.refuseWriteWhileDegraded('set NVIDIA NIM api key')) return;
+    public setNvidiaNimApiKey(key: string): boolean {
+        if (this.refuseWriteWhileDegraded('set NVIDIA NIM api key')) return false;
         const trimmed = (key || '').trim();
         this.credentials.nvidiaNimApiKey = trimmed || undefined;
-        this.saveCredentials();
+        const persisted = this.saveCredentials();
         console.log('[CredentialsManager] NVIDIA NIM API Key updated');
-    }
-
-    /**
-     * Persist the loopback-scoped companion-extension token. Pass an empty string
-     * to clear it (next start mints a fresh one). Only the PhoneMirrorService
-     * writes this — on first start (mint) and on Rotate token. The phone token is
-     * NOT persisted (per-session, LAN-exposed) and is intentionally separate.
-     */
-    public setPhoneMirrorToken(token: string): void {
-        if (this.refuseWriteWhileDegraded('set phone mirror token')) return;
-        this.credentials.phoneMirrorToken = token || undefined;
-        this.saveCredentials();
-        console.log('[CredentialsManager] Extension pairing token updated');
-    }
-
-    /**
-     * Persist LiteLLM proxy config. baseURL is the proxy location (required to
-     * enable the provider); apiKey is the optional virtual/master key;
-     * maxTokens is the optional user-set output ceiling (0/undefined → default).
-     * Passing an empty baseURL clears everything, disabling the provider.
-     */
-    public setLitellmConfig(apiKey: string, baseURL: string, maxTokens?: number): void {
-        if (this.refuseWriteWhileDegraded('set litellm config')) return;
-        const trimmedURL = (baseURL || '').trim();
-        const trimmedKey = (apiKey || '').trim();
-        const previousURL = (this.credentials.litellmBaseURL || '').trim();
-        if (!trimmedURL) {
-            this.credentials.litellmApiKey = undefined;
-            this.credentials.litellmBaseURL = undefined;
-            this.credentials.litellmMaxTokens = undefined;
-            this.credentials.litellmPreferredModel = undefined;
-            this.saveCredentials();
-            console.log('[CredentialsManager] LiteLLM config cleared');
-            return;
-        }
-        // Repointing at a different proxy invalidates the default the same way it
-        // invalidates the discovered-model cache (dropped by the IPC handler): the
-        // model it names belongs to the old host. A same-URL re-save — the common
-        // case, e.g. changing only max-tokens — keeps it.
-        if (previousURL && previousURL !== trimmedURL) {
-            this.credentials.litellmPreferredModel = undefined;
-        }
-        // Empty key + existing stored key = keep it (the Settings field is masked
-        // and left blank when re-saving e.g. just the max-tokens). Clearing the
-        // key entirely is done via Remove (empty baseURL clears everything).
-        this.credentials.litellmApiKey = trimmedKey || this.credentials.litellmApiKey || undefined;
-        this.credentials.litellmBaseURL = trimmedURL;
-        const mt = Number(maxTokens);
-        this.credentials.litellmMaxTokens = Number.isFinite(mt) && mt > 0 ? Math.floor(mt) : undefined;
-        this.saveCredentials();
-        console.log('[CredentialsManager] LiteLLM config updated');
+        return persisted;
     }
 
     /**
@@ -1014,7 +658,7 @@ export class CredentialsManager {
         return persisted;
     }
 
-    public setSttProvider(provider: 'none' | 'google' | 'groq' | 'openai' | 'deepgram' | 'elevenlabs' | 'azure' | 'ibmwatson' | 'soniox' | 'nvidia_nim' | 'natively' | 'local-whisper'): boolean {
+    public setSttProvider(provider: SttProvider): boolean {
         if (this.refuseWriteWhileDegraded('set stt provider')) return false;
         this.credentials.sttProvider = provider;
         const persisted = this.saveCredentials();
@@ -1124,14 +768,6 @@ export class CredentialsManager {
         return persisted;
     }
 
-    public setTavilyApiKey(key: string): void {
-        if (this.refuseWriteWhileDegraded('set tavily api key')) return;
-        // Store undefined (not empty string) when removing, so hasKey() checks stay consistent
-        this.credentials.tavilyApiKey = key.trim() || undefined;
-        this.saveCredentials();
-        console.log('[CredentialsManager] Tavily API Key updated');
-    }
-
     public setSttLanguage(language: string): void {
         if (this.refuseWriteWhileDegraded('set stt language')) return;
         this.credentials.sttLanguage = language;
@@ -1164,63 +800,18 @@ export class CredentialsManager {
         }
     }
 
-    public setAiResponseLanguage(language: string): void {
-        if (this.refuseWriteWhileDegraded('set ai response language')) return;
-        this.credentials.aiResponseLanguage = language;
-        this.saveCredentials();
-        console.log(`[CredentialsManager] AI Response Language set to: ${language}`);
-    }
-    public setDefaultModel(model: string): void {
-        if (this.refuseWriteWhileDegraded('set default model')) return;
-        this.credentials.defaultModel = model;
-        this.saveCredentials();
-        console.log(`[CredentialsManager] Default Model set to: ${model}`);
-    }
-
     public setNativelyApiKey(key: string): void {
         if (this.refuseWriteWhileDegraded('set natively api key')) return;
         const trimmed = key.trim();
         this.credentials.nativelyApiKey = trimmed || undefined;
 
         if (trimmed) {
-            // Auto-promote natively to default model unless user already chose a non-Gemini/Groq model
-            const current = this.credentials.defaultModel || '';
-            // Only ids the APP itself ever auto-assigns count as auto-defaults
-            // (code-review 2026-08-23): the prefix list had grown to include
-            // 'openai/gpt-oss-' and 'groq/', which the auto paths NEVER set —
-            // they are deliberately pickable in the model selector — so a
-            // user's explicit choice was silently replaced with 'natively' the
-            // moment they added a key, contradicting groqModels.ts's "we do
-            // not silently reroute a model the user picked deliberately".
-            // Auto-assigned ids, past and present: the gemini defaults, the
-            // historical Groq fallbacks (llama-3.3, scout — both retired,
-            // which is exactly why sitting on them must not be treated as a
-            // choice), and the current Groq default qwen/qwen3.6-27b.
-            const AUTO_ASSIGNED_MODEL_IDS = new Set([
-                'gemini', 'llama',
-                'llama-3.3-70b-versatile',
-                'meta-llama/llama-4-scout-17b-16e-instruct',
-                'qwen/qwen3.6-27b',
-            ]);
-            const isAutoDefault = !current
-                || current.startsWith('gemini-')
-                || AUTO_ASSIGNED_MODEL_IDS.has(current);
-            if (isAutoDefault) {
-                this.credentials.defaultModel = 'natively';
-                console.log('[CredentialsManager] Auto-set default model to natively');
-            }
-
-            // Auto-promote natively STT if still on 'none' or the default Google STT
+            // Auto-promote Natively STT if still on none or Google.
             if (!this.credentials.sttProvider || this.credentials.sttProvider === 'none' || this.credentials.sttProvider === 'google') {
                 this.credentials.sttProvider = 'natively';
                 console.log('[CredentialsManager] Auto-set STT provider to natively');
             }
         } else {
-            // Key cleared — revert natively-auto-set defaults back to safe fallbacks
-            if (this.credentials.defaultModel === 'natively') {
-                this.credentials.defaultModel = 'gemini-3.1-flash-lite';
-                console.log('[CredentialsManager] Natively key cleared — reset default model to Gemini Flash-Lite');
-            }
             if (this.credentials.sttProvider === 'natively') {
                 this.credentials.sttProvider = 'none';
                 console.log('[CredentialsManager] Natively key cleared — reset STT provider to none');
@@ -1230,106 +821,8 @@ export class CredentialsManager {
         this.saveCredentials();
         console.log('[CredentialsManager] Natively API Key updated');
     }
-
-    public getPreferredModel(provider: PreferredModelProvider): string | undefined {
-        const key = `${provider}PreferredModel` as keyof StoredCredentials;
-        return this.credentials[key] as string | undefined;
-    }
-
-    public setPreferredModel(provider: PreferredModelProvider, modelId: string): void {
-        if (this.refuseWriteWhileDegraded('set preferred model')) return;
-        const key = `${provider}PreferredModel` as keyof StoredCredentials;
-        (this.credentials as any)[key] = modelId;
-        this.saveCredentials();
-        console.log(`[CredentialsManager] ${provider} preferred model set to: ${modelId}`);
-    }
-
-    public saveCustomProvider(provider: CustomProvider): void {
-        if (this.refuseWriteWhileDegraded('save custom provider')) return;
-        if (!this.credentials.customProviders) {
-            this.credentials.customProviders = [];
-        }
-        // Check if exists, update if so
-        const index = this.credentials.customProviders.findIndex(p => p.id === provider.id);
-        if (index !== -1) {
-            this.credentials.customProviders[index] = provider;
-        } else {
-            this.credentials.customProviders.push(provider);
-        }
-        this.saveCredentials();
-        console.log(`[CredentialsManager] Custom Provider '${provider.name}' saved`);
-    }
-
-    public deleteCustomProvider(id: string): void {
-        if (this.refuseWriteWhileDegraded('delete custom provider')) return;
-        if (!this.credentials.customProviders) return;
-        this.credentials.customProviders = this.credentials.customProviders.filter(p => p.id !== id);
-        this.saveCredentials();
-        console.log(`[CredentialsManager] Custom Provider '${id}' deleted`);
-    }
-
-    public getCurlProviders(): CurlProvider[] {
-        return this.credentials.curlProviders || [];
-    }
-
-    public saveCurlProvider(provider: CurlProvider): void {
-        if (this.refuseWriteWhileDegraded('save curl provider')) return;
-        if (!this.credentials.curlProviders) {
-            this.credentials.curlProviders = [];
-        }
-        const index = this.credentials.curlProviders.findIndex(p => p.id === provider.id);
-        if (index !== -1) {
-            this.credentials.curlProviders[index] = provider;
-        } else {
-            this.credentials.curlProviders.push(provider);
-        }
-        this.saveCredentials();
-        console.log(`[CredentialsManager] Curl Provider '${provider.name}' saved`);
-    }
-
-    public deleteCurlProvider(id: string): void {
-        if (this.refuseWriteWhileDegraded('delete curl provider')) return;
-        if (!this.credentials.curlProviders) return;
-        this.credentials.curlProviders = this.credentials.curlProviders.filter(p => p.id !== id);
-        this.saveCredentials();
-        console.log(`[CredentialsManager] Curl Provider '${id}' deleted`);
-    }
-
-    // ── Free Trial ─────────────────────────────────────────────
     public getTrialToken(): string | undefined {
         return this.credentials.trialToken;
-    }
-
-    public getTrialExpiresAt(): string | undefined {
-        return this.credentials.trialExpiresAt;
-    }
-
-    public getTrialStartedAt(): string | undefined {
-        return this.credentials.trialStartedAt;
-    }
-
-    public getTrialClaimed(): boolean {
-        return this.credentials.trialClaimed === true;
-    }
-
-    public setTrialToken(token: string, expiresAt: string, startedAt: string): void {
-        if (this.refuseWriteWhileDegraded('set trial token')) return;
-        this.credentials.trialToken = token;
-        this.credentials.trialExpiresAt = expiresAt;
-        this.credentials.trialStartedAt = startedAt;
-        this.credentials.trialClaimed = true;
-        this.saveCredentials();
-        console.log('[CredentialsManager] Trial token stored, expires:', expiresAt);
-    }
-
-    public clearTrialToken(): void {
-        if (this.refuseWriteWhileDegraded('clear trial token')) return;
-        delete this.credentials.trialToken;
-        delete this.credentials.trialExpiresAt;
-        delete this.credentials.trialStartedAt;
-        // trialClaimed intentionally NOT cleared — keeps start card hidden after token wipe
-        this.saveCredentials();
-        console.log('[CredentialsManager] Trial token cleared');
     }
 
     public clearAll(): void {
@@ -1506,14 +999,12 @@ export class CredentialsManager {
     /**
      * Reject a mutation BEFORE it touches `this.credentials`.
      *
-     * 21 of the setters on this class are `void` — they mutate in-memory state,
-     * call saveCredentials(), and discard the result. Before the degraded-store
+     * Some setters on this class are `void` — they mutate in-memory state, call
+     * saveCredentials(), and discard the result. Before the degraded-store
      * guard existed, saveCredentials() effectively always succeeded, so that was
      * harmless. Now it can refuse, and a `void` setter would leave the in-memory
      * value diverged from disk: Settings would show a key as saved that vanishes
-     * on restart, and worse, CodexOAuthService caches its own copy of a rotated
-     * refresh token in memory — so an unpersisted rotation reads as fine until
-     * the next launch forces a re-auth.
+     * on restart.
      *
      * Every setter therefore calls this FIRST and returns without mutating when
      * it says no. Rejecting before the mutation (rather than reporting after) is
@@ -1798,7 +1289,7 @@ export class CredentialsManager {
                         const decrypted = safeStorage.decryptString(encrypted);
                         const parsed = JSON.parse(decrypted);
                         if (typeof parsed === 'object' && parsed !== null) {
-                            this.credentials = parsed;
+                            this.credentials = CredentialsManager.normalizeCredentialSet(parsed);
                             console.log('[CredentialsManager] Loaded encrypted credentials');
                             keyringSuccess = true;
                         } else {
@@ -1864,20 +1355,21 @@ export class CredentialsManager {
                             // R-10: the keyring read was SKIPPED, not failed, so its contents
                             // are still available and may hold keys the fallback has never
                             // seen. Replacing wholesale dropped them from the active set
-                            // (measured: a restored fallback holding only geminiApiKey hid
-                            // the user's openai and claude keys, and the next save wrote that
-                            // reduced set to disk). Union them, fallback winning on conflict.
+                            // A restored fallback may hold only a subset of the retained
+                            // STT fields. Union them, fallback winning on conflict.
                             let keyringSet: StoredCredentials = {};
                             try {
                                 const kr = JSON.parse(safeStorage.decryptString(fs.readFileSync(CREDENTIALS_PATH)));
-                                if (typeof kr === 'object' && kr !== null) keyringSet = kr;
+                                if (typeof kr === 'object' && kr !== null) {
+                                    keyringSet = CredentialsManager.normalizeCredentialSet(kr);
+                                }
                             } catch { /* unreadable — the fallback alone is the best we have */ }
-                            this.credentials = { ...keyringSet, ...parsed };
+                            this.credentials = CredentialsManager.normalizeCredentialSet({ ...keyringSet, ...parsed });
                             console.warn('[CredentialsManager] Both credential stores are present and neither can be proven newer. '
                                 + 'Running from their union (app-managed fallback wins on conflict); BOTH files are preserved and '
                                 + 'saves will not overwrite the keyring file this session.');
                         } else {
-                            this.credentials = parsed;
+                            this.credentials = CredentialsManager.normalizeCredentialSet(parsed);
                             console.log('[CredentialsManager] Loaded credentials from app-managed fallback');
                         }
                     } else {
@@ -1897,7 +1389,7 @@ export class CredentialsManager {
                         try {
                             const kr = JSON.parse(safeStorage.decryptString(fs.readFileSync(CREDENTIALS_PATH)));
                             if (typeof kr === 'object' && kr !== null) {
-                                this.credentials = kr;
+                                this.credentials = CredentialsManager.normalizeCredentialSet(kr);
                                 recovered = true;
                                 console.warn('[CredentialsManager] The app-managed fallback could not be decrypted and carries no usable data; '
                                     + 'loaded the encrypted keyring instead. The unreadable fallback is left on disk and is ignored.');

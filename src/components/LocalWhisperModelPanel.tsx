@@ -5,9 +5,13 @@ import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { isMac } from '../utils/platformUtils';
 // This panel speaks the AI Providers design language. The sheet has to travel
 // with it: Settings mounts one panel at a time, so on the Audio tab the
-// AIProvidersSettings component — and therefore its <style> — is not in the DOM,
+// The shared STT provider stylesheet is mounted by this panel,
 // and every .aip-* class would resolve to nothing.
-import { AIP_CSS, AipBadge, AipSwitch } from './settings/AIProvidersSettings';
+import {
+    STT_PROVIDER_CSS as AIP_CSS,
+    SttProviderBadge as AipBadge,
+    SttProviderSwitch as AipSwitch,
+} from './settings/SttProviderPrimitives';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 
 interface ModelInfo {
@@ -49,12 +53,6 @@ interface RecoveryNotice {
     recovered: true;
     badModelId: string;
     fallbackModelId: string;
-    message: string;
-}
-
-interface OnnxRecoveryNotice {
-    family: 'whisper' | 'intent' | 'embeddings' | 'reranker';
-    badModelId: string;
     message: string;
 }
 
@@ -235,12 +233,11 @@ export function LocalWhisperModelPanel({ onModelConfigChanged }: LocalWhisperMod
     const [downloadProgress, setDownloadProgress] = useState<Record<string, number>>({});
     const [downloadingSet, setDownloadingSet] = useState<Set<string>>(new Set());
     const [recoveryNotice, setRecoveryNotice] = useState<RecoveryNotice | null>(null);
-    const [onnxNotices, setOnnxNotices] = useState<Partial<Record<OnnxRecoveryNotice['family'], OnnxRecoveryNotice>>>({});
     const [loading, setLoading] = useState(true);
 
     const loadData = useCallback(async () => {
         try {
-            const [modelsRes, hwRes, cfgRes, stateRes, noticeRes, intentRes, embedRes, rerankRes] = await Promise.all([
+            const [modelsRes, hwRes, cfgRes, stateRes, noticeRes] = await Promise.all([
                 electronAPI?.localWhisperGetModels?.(),
                 electronAPI?.localWhisperGetHardware?.(),
                 electronAPI?.localWhisperGetChannelConfig?.(),
@@ -251,28 +248,12 @@ export function LocalWhisperModelPanel({ onModelConfigChanged }: LocalWhisperMod
                 // still downloading.
                 electronAPI?.localWhisperGetDownloadState?.().catch(() => []),
                 electronAPI?.localWhisperGetRecoveryNotice?.().catch(() => null),
-                // Generalized ONNX load-sentinel notices for the other three
-                // local-model families (intent classifier / local embeddings /
-                // local reranker). Each is one-shot drained through AppState so
-                // a renderer reload does not see the same notice twice.
-                electronAPI?.onnxGetRecoveryNotice?.('intent').catch(() => null),
-                electronAPI?.onnxGetRecoveryNotice?.('embeddings').catch(() => null),
-                electronAPI?.onnxGetRecoveryNotice?.('reranker').catch(() => null),
             ]);
 
             if (modelsRes) setModels(modelsRes.models ?? []);
             if (hwRes) setHardware(hwRes);
             if (cfgRes) setConfig(cfgRes);
             if (noticeRes?.recovered) setRecoveryNotice(noticeRes);
-
-            // Merge the three family-keyed notices into a single keyed object
-            // so the chips render in a deterministic order. A `null` from the
-            // IPC means "no notice this session" — leave the chip out.
-            const nextOnnx: typeof onnxNotices = {};
-            if (intentRes) nextOnnx.intent = intentRes as OnnxRecoveryNotice;
-            if (embedRes) nextOnnx.embeddings = embedRes as OnnxRecoveryNotice;
-            if (rerankRes) nextOnnx.reranker = rerankRes as OnnxRecoveryNotice;
-            setOnnxNotices(nextOnnx);
 
             // Merge service state into UI state. We only mutate state for
             // entries the service knows about — a 'complete' entry triggers
@@ -529,30 +510,6 @@ export function LocalWhisperModelPanel({ onModelConfigChanged }: LocalWhisperMod
                         <X size={13} />
                     </button>
                 </div>
-            )}
-            {onnxNotices.intent && (
-                <OnnxRecoveryChip
-                    title={t("Recovered intent classifier")}
-                    family="intent"
-                    notice={onnxNotices.intent}
-                    onDismiss={() => setOnnxNotices((s) => ({ ...s, intent: undefined }))}
-                />
-            )}
-            {onnxNotices.embeddings && (
-                <OnnxRecoveryChip
-                    title={t("Recovered local embeddings")}
-                    family="embeddings"
-                    notice={onnxNotices.embeddings}
-                    onDismiss={() => setOnnxNotices((s) => ({ ...s, embeddings: undefined }))}
-                />
-            )}
-            {onnxNotices.reranker && (
-                <OnnxRecoveryChip
-                    title={t("Recovered local reranker")}
-                    family="reranker"
-                    notice={onnxNotices.reranker}
-                    onDismiss={() => setOnnxNotices((s) => ({ ...s, reranker: undefined }))}
-                />
             )}
             {/* .aip-card + .aip-provider: the same container and internal rhythm every
                 provider card in AI Providers uses. .aip-provider owns the padding and
@@ -896,79 +853,8 @@ export function LocalWhisperModelPanel({ onModelConfigChanged }: LocalWhisperMod
             {/* LAST child, matching AI Providers: as a first child it would satisfy the
                 `space-*` sibling selector and push margin onto the real first card.
                 Mounted here because Settings renders one panel at a time — on this tab
-                AIProvidersSettings is unmounted, so its copy of the sheet is not in the
-                DOM and every .aip-* class above would resolve to nothing. */}
+                the stylesheet must remain mounted with the panel. */}
             <style>{AIP_CSS}</style>
-        </div>
-    );
-}
-
-/**
- * Compact status chip for the three "silent background" local models
- * (intent / embeddings / reranker). Smaller than the full Whisper banner
- * because the user doesn't otherwise notice these degraded paths.
- *
- * "Retry now" calls the `onnx-reset-family` IPC to clear the cold-start
- * poison flag in the main process. The user must reopen the panel to see
- * the actual retry attempt — the next `ensureLoaded()` will try a fresh
- * spawn; if it succeeds the chip will simply not reappear next launch
- * because the disk sentinel was cleared on `ready`.
- */
-function OnnxRecoveryChip({
-    title,
-    family,
-    notice,
-    onDismiss,
-}: {
-    title: string;
-    family: OnnxRecoveryNotice['family'];
-    notice: OnnxRecoveryNotice;
-    onDismiss: () => void;
-}) {
-    const t = useT();
-    const [retrying, setRetrying] = useState(false);
-    const handleRetry = useCallback(async () => {
-        setRetrying(true);
-        try {
-            await electronAPI?.onnxResetFamily?.(family);
-        } finally {
-            setRetrying(false);
-            onDismiss();
-        }
-    }, [family, onDismiss]);
-    return (
-        <div className="aip-card flex items-start gap-3 p-3" style={{ color: 'var(--aip-warn)', background: 'var(--aip-warn-bg)', borderColor: 'var(--aip-warn-border)' }}>
-            <AlertCircle size={14} className="mt-0.5 flex-shrink-0 opacity-80" />
-            <div className="flex-1 min-w-0">
-                <div className="text-xs font-semibold" style={{ color: 'var(--aip-primary)' }}>{title}</div>
-                <p className="text-[11px] mt-0.5 leading-relaxed" style={{ color: 'var(--aip-secondary)' }}>
-                    {notice.message}
-                </p>
-                <div className="mt-2 flex items-center gap-3">
-                    <button
-                        onClick={handleRetry}
-                        disabled={retrying}
-                        className="aip-btn"
-                        data-size="sm"
-                        data-variant="accent"
-                    >
-                        {retrying ? t('Retrying…') : t('Retry now')}
-                    </button>
-                    <span className="text-[10px]" style={{ color: 'var(--aip-tertiary)' }}>
-                        {t('Skipped model:')} <span className="font-mono">{notice.badModelId}</span>
-                    </span>
-                </div>
-            </div>
-            <button
-                onClick={onDismiss}
-                className="aip-btn"
-                data-size="sm"
-                data-icon="true"
-                data-variant="ghost"
-                aria-label={t("Dismiss recovery notice")}
-            >
-                <X size={12} />
-            </button>
         </div>
     );
 }

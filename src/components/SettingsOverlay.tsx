@@ -11,13 +11,6 @@ import {
 } from 'lucide-react';
 import { HiCreditCard } from 'react-icons/hi2';
 import { analytics } from '../lib/analytics/analytics.service';
-import { AboutSection } from './AboutSection';
-import { HelpSettings } from './settings/HelpSettings';
-import { AIProvidersSettings } from './settings/AIProvidersSettings';
-import { PlansSettings } from './settings/PlansSettings';
-import { PhoneMirrorSettings } from './settings/PhoneMirrorSettings';
-import { IntelligenceSettings } from './settings/IntelligenceSettings';
-import { SkillsSettings } from './settings/SkillsSettings';
 import { LocalWhisperModelPanel, type ChannelConfig as LocalWhisperChannelConfig } from './LocalWhisperModelPanel';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { useShortcuts } from '../hooks/useShortcuts';
@@ -35,7 +28,6 @@ import {
 import { getMeetingInterfaceTheme, setMeetingInterfaceTheme, type MeetingInterfaceTheme } from '../lib/meetingInterfaceTheme';
 import { KeyRecorder } from './ui/KeyRecorder';
 import { Disclosure, DisclosureChevron } from './ui/AccordionSection';
-import { ProfileVisualizer, PremiumUpgradeModal } from '../premium';
 import GlassEffectLayer from './ui/GlassEffectLayer';
 import { BrandMark, BrandMonogram } from './ui/BrandMark';
 import icon from './icon.png';
@@ -119,55 +111,9 @@ const MockupNativelyInterface = ({ opacity, theme }: { opacity: number; theme: M
                             </p>
                         </div>
 
-                        {/* Chat History Mock */}
-                        <div className="flex-1 overflow-y-auto px-4 py-2 space-y-3">
-                            <div className="flex justify-start">
-                                <div className="max-w-[85%] px-4 py-3 text-[14px] leading-relaxed font-normal overlay-text-primary">
-                                    <span className="font-semibold text-emerald-500 block mb-1">{t('Suggestion')}</span>
-                                    {t('A good approach would be to use a hash map to cache the intermediate results, which brings the time complexity down from O(n²) to O(n).')}
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Quick Actions */}
-                        <div className="flex flex-nowrap justify-center items-center gap-1.5 px-4 pb-3 pt-3">
-                            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border shrink-0 overlay-chip-surface overlay-text-interactive" style={appearance.chipStyle}>
-                                <Pencil className="w-3 h-3 opacity-70" /> {t('What to answer?')}
-                            </div>
-                            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border shrink-0 overlay-chip-surface overlay-text-interactive" style={appearance.chipStyle}>
-                                <MessageSquare className="w-3 h-3 opacity-70" /> {t('Clarify')}
-                            </div>
-                            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border shrink-0 overlay-chip-surface overlay-text-interactive" style={appearance.chipStyle}>
-                                <RefreshCw className="w-3 h-3 opacity-70" /> {t('Recap')}
-                            </div>
-                            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium border shrink-0 overlay-chip-surface overlay-text-interactive" style={appearance.chipStyle}>
-                                <HelpCircle className="w-3 h-3 opacity-70" /> {t('Follow Up Question')}
-                            </div>
-                            <div className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium min-w-[74px] shrink-0 border overlay-chip-surface overlay-text-interactive" style={appearance.chipStyle}>
-                                <Zap className="w-3 h-3 opacity-70" /> {t('Answer')}
-                            </div>
-                        </div>
-
-                        {/* Input Area */}
-                        <div className="px-3">
-                            <div className="relative group">
-                                <div className="w-full border rounded-xl pl-3 pr-10 py-2.5 h-[38px] flex items-center overlay-input-surface" style={appearance.inputStyle}>
-                                    <span className="text-[13px] overlay-text-muted">{t('Ask anything on screen or conversation')}</span>
-                                </div>
-                            </div>
-
-                            {/* Bottom Row */}
-                            <div className="flex items-center justify-between mt-3 px-0.5">
-                                <div className="flex items-center gap-1.5">
-                                    <div className="flex items-center gap-2 px-3 py-1.5 border rounded-lg text-xs font-medium w-[140px] overlay-control-surface overlay-text-interactive" style={appearance.controlStyle}>
-                                        <span className="truncate min-w-0 flex-1">Gemini 3 Flash</span>
-                                        <ChevronDown size={14} className="shrink-0" />
-                                    </div>
-                                    <div className="w-px h-3 mx-1" style={appearance.dividerStyle} />
-                                    <div className="w-7 h-7 flex items-center justify-center rounded-lg overlay-icon-surface overlay-text-muted" style={appearance.iconStyle}>
-                                        <SlidersHorizontal className="w-3.5 h-3.5" />
-                                    </div>
-                                </div>
+                        <div className="px-4 py-4">
+                            <div className="rounded-xl border overlay-input-surface px-3 py-2.5 text-[13px] overlay-text-muted" style={appearance.inputStyle}>
+                                {t('Send a question and selected context to ChatGPT Web')}
                             </div>
                         </div>
                     </div>
@@ -406,23 +352,18 @@ const ProviderSelect: React.FC<ProviderSelectProps> = ({ value, options, onChang
    direction rather than guessing. Keep in sync with the <nav> below. */
 const SETTINGS_NAV_ORDER = [
     'general',
-    'plans',
-    'ai-providers',
-    'skills',
     'calendar',
     'audio',
     'keybinds',
-    'phone-mirror',
-    'intelligence',
-    'help',
-    'about',
 ];
+const WEB_ONLY_SETTINGS_TABS = new Set(SETTINGS_NAV_ORDER);
+const normalizeWebOnlySettingsTab = (tab?: string) =>
+    tab && WEB_ONLY_SETTINGS_TABS.has(tab) ? tab : 'general';
 
 interface SettingsOverlayProps {
     isOpen: boolean;
     onClose: () => void;
     initialTab?: string;
-    initialIsPremium?: boolean | null;
     initialHasNativelyKey?: boolean;
 }
 
@@ -430,12 +371,11 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
     isOpen,
     onClose,
     initialTab = 'general',
-    initialIsPremium = null,
     initialHasNativelyKey = false,
 }) => {
     const isLight = useResolvedTheme() === 'light';
     const { t, lang, setLang } = useLanguage();
-    const [activeTab, setActiveTab] = useState(initialTab);
+    const [activeTab, setActiveTab] = useState(() => normalizeWebOnlySettingsTab(initialTab));
 
     /* ---------------------------------------------------------------- */
     /* Section transition                                                */
@@ -513,8 +453,9 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                to stop. Suppress that one transition. The `!==` matters: setting
                this on a same-tab open would never clear and would swallow the
                user's first real tab click. */
-            if (initialTab !== activeTab) suppressPanelAnimRef.current = true;
-            setActiveTab(initialTab);
+            const nextTab = normalizeWebOnlySettingsTab(initialTab);
+            if (nextTab !== activeTab) suppressPanelAnimRef.current = true;
+            setActiveTab(nextTab);
 
 
         }
@@ -542,10 +483,8 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
     const [openOnLogin, setOpenOnLogin] = useState(false);
     const [themeMode, setThemeMode] = useState<'system' | 'light' | 'dark'>('system');
     const [isThemeDropdownOpen, setIsThemeDropdownOpen] = useState(false);
-    const [isAiLangDropdownOpen, setIsAiLangDropdownOpen] = useState(false);
     const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'uptodate' | 'error'>('idle');
     const themeDropdownRef = React.useRef<HTMLDivElement>(null);
-    const aiLangDropdownRef = React.useRef<HTMLDivElement>(null);
     const [meetingInterfaceTheme, setMeetingInterfaceThemeState] = useState<MeetingInterfaceTheme>(getMeetingInterfaceTheme);
     const [isInterfaceThemeDropdownOpen, setIsInterfaceThemeDropdownOpen] = useState(false);
     const interfaceThemeDropdownRef = React.useRef<HTMLDivElement>(null);
@@ -554,11 +493,8 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
 
 
     const [verboseLogging, setVerboseLogging] = useState(false);
-    const [ambientChatEnabled, setAmbientChatEnabled] = useState(false);
-    const [autoAnswerEnabled, setAutoAnswerEnabled] = useState(false);
     const [meetingRetention, setMeetingRetention] = useState<'forever' | '7d' | '30d' | 'never'>('forever');
     const [showVerboseToast, setShowVerboseToast] = useState(false);
-    const [codeVerification, setCodeVerification] = useState(false);
     const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
     const verboseToastTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -573,9 +509,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
             window.electronAPI?.getOverlayMousePassthrough?.().then(setIsMousePassthrough).catch(() => { });
             window.electronAPI?.getDisguise?.().then(setDisguiseMode).catch(() => { });
             window.electronAPI?.getVerboseLogging?.().then(setVerboseLogging).catch(() => { });
-            window.electronAPI?.getAmbientChatEnabled?.().then(setAmbientChatEnabled).catch(() => { });
-            window.electronAPI?.getAutoAnswerEnabled?.().then(setAutoAnswerEnabled).catch(() => { });
-            window.electronAPI?.getCodeVerification?.().then((v) => setCodeVerification(v === true)).catch(() => { });
             window.electronAPI?.getMeetingRetention?.().then(setMeetingRetention).catch(() => { });
         }
     }, [isOpen]);
@@ -638,9 +571,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
             if (themeDropdownRef.current && !themeDropdownRef.current.contains(event.target as Node)) {
                 setIsThemeDropdownOpen(false);
             }
-            if (aiLangDropdownRef.current && !aiLangDropdownRef.current.contains(event.target as Node)) {
-                setIsAiLangDropdownOpen(false);
-            }
             if (interfaceThemeDropdownRef.current && !interfaceThemeDropdownRef.current.contains(event.target as Node)) {
                 setIsInterfaceThemeDropdownOpen(false);
             }
@@ -649,14 +579,14 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
             }
         };
 
-        if (isThemeDropdownOpen || isAiLangDropdownOpen || isInterfaceThemeDropdownOpen || isLangDropdownOpen) {
+        if (isThemeDropdownOpen || isInterfaceThemeDropdownOpen || isLangDropdownOpen) {
             document.addEventListener('mousedown', handleClickOutside);
         }
 
         return () => {
             document.removeEventListener('mousedown', handleClickOutside);
         };
-    }, [isThemeDropdownOpen, isAiLangDropdownOpen, isInterfaceThemeDropdownOpen, isLangDropdownOpen]);
+    }, [isThemeDropdownOpen, isInterfaceThemeDropdownOpen, isLangDropdownOpen]);
 
     const [showTranscript, setShowTranscript] = useState(() => {
         const stored = localStorage.getItem('natively_interviewer_transcript');
@@ -686,10 +616,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
         support: { languageSelectable: boolean; accentSelectable: boolean; allowedLanguageKeys: string[] };
     }> | null>(null);
     const [localWhisperConfig, setLocalWhisperConfig] = useState<LocalWhisperChannelConfig | null>(null);
-
-    // AI Response Language
-    const [aiResponseLanguage, setAiResponseLanguage] = useState('English');
-    const [availableAiLanguages, setAvailableAiLanguages] = useState<any[]>([]);
 
     // Overlay Opacity state
     const [overlayOpacity, setOverlayOpacity] = useState<number>(() => {
@@ -920,21 +846,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                 }
             }
 
-            if (window.electronAPI?.getAiResponseLanguages) {
-                const aiLangs = await window.electronAPI.getAiResponseLanguages();
-                // Sort: Auto first, English second, then alphabetical
-                const sortedAiLangs = [...aiLangs].sort((a, b) => {
-                    if (a.code === 'auto') return -1;
-                    if (b.code === 'auto') return 1;
-                    if (a.label === 'English') return -1;
-                    if (b.label === 'English') return 1;
-                    return a.label.localeCompare(b.label);
-                });
-                setAvailableAiLanguages(sortedAiLangs);
-
-                const storedAi = await window.electronAPI.getAiResponseLanguage();
-                setAiResponseLanguage(storedAi || 'auto');
-            }
         };
         loadLanguages();
     }, []);
@@ -1070,27 +981,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
             groupId: '',
             toJSON: () => ({})
         }));
-
-    const handleAiLanguageChange = async (key: string) => {
-        if (!key) return;
-        const previous = aiResponseLanguage;
-        setAiResponseLanguage(key); // Optimistic update
-        try {
-            if (window.electronAPI?.setAiResponseLanguage) {
-                const result = await window.electronAPI.setAiResponseLanguage(key);
-                if (result && !result.success) {
-                    // Rollback on explicit failure
-                    setAiResponseLanguage(previous);
-                    console.error('[Settings] Failed to set AI response language:', result.error);
-                }
-            }
-        } catch (err) {
-            // Rollback on exception
-            setAiResponseLanguage(previous);
-            console.error('[Settings] Exception setting AI response language:', err);
-        }
-    };
-
 
     // Sync transcript setting
     useEffect(() => {
@@ -1408,18 +1298,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
             }
         } catch (e) {
             console.error(`Failed to remove ${provider} STT key:`, e);
-        }
-    };
-
-    const handleRemoveTavilyKey = async () => {
-        if (!confirm('Are you sure you want to remove the Tavily API Key?')) return;
-
-        try {
-            await window.electronAPI?.setTavilyApiKey?.('');
-
-
-        } catch (e) {
-            console.error('Failed to remove Tavily API key:', e);
         }
     };
 
@@ -1795,28 +1673,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         <Monitor size={16} /> {t('General')}
                                     </button>
                                     <button
-                                        onClick={() => setActiveTab('plans')}
-                                        className={navItemClass(activeTab === 'plans' || activeTab === 'natively-api' || activeTab === 'natively-pro')}
-                                    >
-                                        {(activeTab === 'plans' || activeTab === 'natively-api' || activeTab === 'natively-pro') && navActivePill}
-                                        <HiCreditCard size={16} />
-                                        <span>{t('Plans & Billing')}</span>
-                                    </button>
-                                    <button
-                                        onClick={() => setActiveTab('ai-providers')}
-                                        className={navItemClass(activeTab === 'ai-providers')}
-                                    >
-                                        {activeTab === 'ai-providers' && navActivePill}
-                                        <FlaskConical size={16} /> {t('AI Providers')}
-                                    </button>
-                                    <button
-                                        onClick={() => setActiveTab('skills')}
-                                        className={navItemClass(activeTab === 'skills')}
-                                    >
-                                        {activeTab === 'skills' && navActivePill}
-                                        <Folder size={16} /> {t('Skills')}
-                                    </button>
-                                    <button
                                         onClick={() => setActiveTab('calendar')}
                                         className={navItemClass(activeTab === 'calendar')}
                                     >
@@ -1838,38 +1694,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                         <Keyboard size={16} /> {t('Keybinds')}
                                     </button>
 
-                                    <button
-                                        onClick={() => setActiveTab('phone-mirror')}
-                                        className={navItemClass(activeTab === 'phone-mirror')}
-                                    >
-                                        {activeTab === 'phone-mirror' && navActivePill}
-                                        <Smartphone size={16} /> {t('Sync')}
-                                    </button>
-
-                                    <button
-                                        onClick={() => setActiveTab('intelligence')}
-                                        className={navItemClass(activeTab === 'intelligence')}
-                                    >
-                                        {activeTab === 'intelligence' && navActivePill}
-                                        <Cpu size={16} /> {t('Intelligence')}
-                                    </button>
-
-
-                                    <button
-                                        onClick={() => setActiveTab('help')}
-                                        className={navItemClass(activeTab === 'help', 'text-[13px]')}
-                                    >
-                                        {activeTab === 'help' && navActivePill}
-                                        <HelpCircle size={16} /> {t('Setup & Help')}
-                                    </button>
-
-                                    <button
-                                        onClick={() => setActiveTab('about')}
-                                        className={navItemClass(activeTab === 'about')}
-                                    >
-                                        {activeTab === 'about' && navActivePill}
-                                        <Info size={16} /> {t('About')}
-                                    </button>
                                 </nav>
                             </div>
 
@@ -1993,63 +1817,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                             window.electronAPI?.setOpenAtLogin(newState);
                                                         }}
                                                         className={openOnLogin ? 'bg-accent-primary border border-transparent' : 'bg-bg-toggle-switch border border-border-muted'}
-                                                    />
-                                                </div>
-
-                                                {/* Ambient AI Chat */}
-                                                <div className="flex items-center justify-between px-4 py-3">
-                                                    <div className="flex items-center gap-4">
-                                                        <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle text-text-primary flex items-center justify-center shrink-0">
-                                                            <Headphones size={20} />
-                                                        </div>
-                                                        <div>
-                                                            <h3 className="text-sm font-bold text-text-primary">{t('Ambient AI Chat')}</h3>
-                                                            <p className="text-xs text-text-secondary mt-0.5">{t('Meetings start without capturing mic or system audio')}</p>
-                                                        </div>
-                                                    </div>
-                                                    <SettingsToggle
-                                                        checked={ambientChatEnabled}
-                                                        label={t('Ambient AI Chat')}
-                                                        onChange={() => {
-                                                            const newState = !ambientChatEnabled;
-                                                            setAmbientChatEnabled(newState);
-                                                            window.electronAPI?.setAmbientChatEnabled?.(newState);
-                                                        }}
-                                                        className={ambientChatEnabled ? 'bg-accent-primary border border-transparent' : 'bg-bg-toggle-switch border border-border-muted'}
-                                                    />
-                                                </div>
-
-                                                {/* Auto Answer */}
-                                                <div className="flex items-center justify-between px-4 py-3">
-                                                    <div className="flex items-center gap-4">
-                                                        <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle text-text-primary flex items-center justify-center shrink-0">
-                                                            <MessageSquareReply size={20} />
-                                                        </div>
-                                                        <div>
-                                                            <h3 className="text-sm font-bold text-text-primary">{t('Auto Answer')}</h3>
-                                                            <p className="text-xs text-text-secondary mt-0.5">{t('Answers appear as soon as the interviewer finishes a question')}</p>
-                                                        </div>
-                                                    </div>
-                                                    <SettingsToggle
-                                                        checked={autoAnswerEnabled}
-                                                        label={t('Auto Answer')}
-                                                        onChange={async () => {
-                                                            const previous = autoAnswerEnabled;
-                                                            const newState = !previous;
-                                                            setAutoAnswerEnabled(newState); // Optimistic update
-                                                            try {
-                                                                const result = await window.electronAPI?.setAutoAnswerEnabled?.(newState);
-                                                                if (result && !result.success) {
-                                                                    // Rollback on explicit failure (settings store degraded)
-                                                                    setAutoAnswerEnabled(previous);
-                                                                    console.error('[Settings] Failed to set Auto Answer:', result.error);
-                                                                }
-                                                            } catch (err) {
-                                                                setAutoAnswerEnabled(previous);
-                                                                console.error('[Settings] Exception setting Auto Answer:', err);
-                                                            }
-                                                        }}
-                                                        className={autoAnswerEnabled ? 'bg-accent-primary border border-transparent' : 'bg-bg-toggle-switch border border-border-muted'}
                                                     />
                                                 </div>
 
@@ -2404,32 +2171,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                         )}
                                                     </AnimatePresence>
 
-                                                    {/* Code Verification — runs LLM-generated code against test cases + one-shot correction */}
-                                                    <div className="flex items-center justify-between px-4 py-3">
-                                                        <div className="flex items-center gap-4">
-                                                            <div className="w-10 h-10 bg-bg-item-surface rounded-lg border border-border-subtle text-text-primary flex items-center justify-center shrink-0">
-                                                                <Code2 size={20} />
-                                                            </div>
-                                                            <div>
-                                                                <h3 className="text-sm font-bold text-text-primary">{t('Verify coding answers')}</h3>
-                                                                <p className="text-xs text-text-secondary mt-0.5">{t('Run generated code against test cases and self-correct')}</p>
-                                                            </div>
-                                                        </div>
-                                                        <SettingsToggle
-                                                            checked={codeVerification}
-                                                            label={t('Verify coding answers')}
-                                                            onChange={() => {
-                                                                const newState = !codeVerification;
-                                                                setCodeVerification(newState);
-                                                                // Swallow rejection: a missing handler (pre-rebuild) must not
-                                                                // spam the console with unhandledrejection noise like the
-                                                                // other toggle-style settings also use optional chaining.
-                                                                window.electronAPI?.setCodeVerification?.(newState)?.catch?.(() => { });
-                                                            }}
-                                                            className={codeVerification ? 'bg-accent-primary border border-transparent' : 'bg-bg-toggle-switch border border-border-muted'}
-                                                        />
-                                                    </div>
-
                                                     {/* Interviewer Transcript */}
                                                     <div className="flex items-center justify-between px-4 py-3">
                                                         <div className="flex items-center gap-4">
@@ -2578,25 +2319,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                 </div>
                             )}
 
-                            {activeTab === 'ai-providers' && (
-                                <AIProvidersSettings
-                                    aiResponseLanguage={aiResponseLanguage}
-                                    availableAiLanguages={availableAiLanguages}
-                                    isAiLangDropdownOpen={isAiLangDropdownOpen}
-                                    onToggleAiLangDropdown={() => setIsAiLangDropdownOpen(!isAiLangDropdownOpen)}
-                                    onSelectAiLanguage={(code) => {
-                                        handleAiLanguageChange(code);
-                                        setIsAiLangDropdownOpen(false);
-                                    }}
-                                    aiLangDropdownRef={aiLangDropdownRef}
-                                />
-                            )}
-                            {activeTab === 'skills' && (
-                                <SkillsSettings />
-                            )}
-                            {(activeTab === 'plans' || activeTab === 'natively-api' || activeTab === 'natively-pro') && (
-                                <PlansSettings initialIsPremium={initialIsPremium} initialHasNativelyKey={hasNativelyKey} />
-                            )}
                             {activeTab === 'keybinds' && (
                                 <div className="space-y-5 animated fadeIn select-text pb-4">
                                     <div className="flex items-start justify-between">
@@ -2659,58 +2381,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                 </div>
                                                 <div className="flex items-center justify-between py-1.5 group">
                                                     <div className="flex items-center gap-3">
-                                                        <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><MessageSquare size={14} /></span>
-                                                        <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">{t('Process Screenshots')}</span>
-                                                    </div>
-                                                    <div className="flex items-center gap-2">
-                                                        {renderShortcutConflictBadge('processScreenshots')}
-                                                        <KeyRecorder
-                                                            currentKeys={shortcuts.processScreenshots}
-                                                            onSave={(keys) => updateShortcut('processScreenshots', keys)}
-                                                        />
-                                                    </div>
-                                                </div>
-                                                <div className="flex items-center justify-between py-1.5 group">
-                                                    <div className="flex items-center gap-3">
-                                                        <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><Sparkles size={14} /></span>
-                                                        <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">{t('Capture Screen & Ask AI')}</span>
-                                                    </div>
-                                                    <div className="flex items-center gap-2">
-                                                        {renderShortcutConflictBadge('captureAndProcess')}
-                                                        <KeyRecorder
-                                                            currentKeys={shortcuts.captureAndProcess}
-                                                            onSave={(keys) => updateShortcut('captureAndProcess', keys)}
-                                                        />
-                                                    </div>
-                                                </div>
-                                                <div className="flex items-center justify-between py-1.5 group">
-                                                    <div className="flex items-center gap-3">
-                                                        <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><Globe size={14} /></span>
-                                                        <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">{t('Capture Page (Browser)')}</span>
-                                                    </div>
-                                                    <div className="flex items-center gap-2">
-                                                        {renderShortcutConflictBadge('capturePage')}
-                                                        <KeyRecorder
-                                                            currentKeys={shortcuts.capturePage}
-                                                            onSave={(keys) => updateShortcut('capturePage', keys)}
-                                                        />
-                                                    </div>
-                                                </div>
-                                                <div className="flex items-center justify-between py-1.5 group">
-                                                    <div className="flex items-center gap-3">
-                                                        <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><RotateCcw size={14} /></span>
-                                                        <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">{t('Reset / Cancel')}</span>
-                                                    </div>
-                                                    <div className="flex items-center gap-2">
-                                                        {renderShortcutConflictBadge('resetCancel')}
-                                                        <KeyRecorder
-                                                            currentKeys={shortcuts.resetCancel}
-                                                            onSave={(keys) => updateShortcut('resetCancel', keys)}
-                                                        />
-                                                    </div>
-                                                </div>
-                                                <div className="flex items-center justify-between py-1.5 group">
-                                                    <div className="flex items-center gap-3">
                                                         <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center"><Camera size={14} /></span>
                                                         <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">{t('Take Screenshot')}</span>
                                                     </div>
@@ -2735,43 +2405,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                                         />
                                                     </div>
                                                 </div>
-                                            </div>
-                                        </div>
-
-                                        {/* Chat Category */}
-                                        <div>
-                                            <div className="mb-3">
-                                                <h4 className="text-sm font-bold text-text-primary">{t('Chat')}</h4>
-                                            </div>
-                                            <div className="space-y-1">
-                                                {[
-                                                    { id: 'whatToAnswer', label: 'What to Answer', icon: <Sparkles size={14} /> },
-                                                    { id: 'clarify', label: 'Clarify', icon: <MessageSquare size={14} /> },
-                                                    { id: 'followUp', label: 'Follow Up', icon: <MessageSquare size={14} /> },
-                                                    { id: 'dynamicAction4', label: 'Recap / Brainstorm', icon: <RefreshCw size={14} /> },
-                                                    { id: 'answer', label: 'Answer / Record', icon: <Mic size={14} /> },
-                                                    { id: 'codeHint', label: 'Get Code Hint', icon: <Zap size={14} /> },
-                                                    { id: 'brainstorm', label: 'Brainstorm Approaches', icon: <Zap size={14} /> },
-                                                    { id: 'scrollUp', label: 'Scroll Up', icon: <ArrowUp size={14} /> },
-                                                    { id: 'scrollDown', label: 'Scroll Down', icon: <ArrowDown size={14} /> },
-                                                    { id: 'scrollLeft', label: 'Scroll Left (code block)', icon: <ArrowLeft size={14} /> },
-                                                    { id: 'scrollRight', label: 'Scroll Right (code block)', icon: <ArrowRight size={14} /> },
-                                                    { id: 'focusInput', label: 'Toggle Stealth Typing', icon: <MessageSquare size={14} /> },
-                                                ].map((item, i) => (
-                                                    <div key={i} className="flex items-center justify-between py-1.5 group">
-                                                        <div className="flex items-center gap-3">
-                                                            <span className="text-text-tertiary group-hover:text-text-primary transition-colors w-5 flex justify-center">{item.icon}</span>
-                                                            <span className="text-sm text-text-secondary font-medium group-hover:text-text-primary transition-colors">{t(item.label)}</span>
-                                                        </div>
-                                                        <div className="flex items-center gap-2">
-                                                            {renderShortcutConflictBadge(item.id as keyof typeof shortcuts)}
-                                                            <KeyRecorder
-                                                                currentKeys={shortcuts[item.id as keyof typeof shortcuts]}
-                                                                onSave={(keys) => updateShortcut(item.id as any, keys)}
-                                                            />
-                                                        </div>
-                                                    </div>
-                                                ))}
                                             </div>
                                         </div>
 
@@ -3697,21 +3330,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({
                                 </div>
                             )}
 
-                            {activeTab === 'phone-mirror' && (
-                                <PhoneMirrorSettings />
-                            )}
-
-                            {activeTab === 'intelligence' && (
-                                <IntelligenceSettings />
-                            )}
-
-                            {activeTab === 'help' && (
-                                <HelpSettings onNavigate={setActiveTab} />
-                            )}
-
-                            {activeTab === 'about' && (
-                                <AboutSection />
-                            )}
                             </motion.div>
                         </div>
                     </div>

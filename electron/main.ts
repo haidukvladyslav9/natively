@@ -1203,13 +1203,11 @@ console.error = (...args: any[]) => {
 import { initializeIpcHandlers } from "./ipcHandlers"
 import { WindowHelper } from "./WindowHelper"
 import { SettingsWindowHelper } from "./SettingsWindowHelper"
-import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
 import { CropperWindowHelper } from "./CropperWindowHelper"
+import { ChatGptWebWindowHelper } from "./ChatGptWebWindowHelper"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { KeybindManager } from "./services/KeybindManager"
-import { ProcessingHelper } from "./ProcessingHelper"
-
-import { IntelligenceManager } from "./IntelligenceManager"
+import { MeetingSessionManager } from "./MeetingSessionManager"
 import { SystemAudioCapture } from "./audio/SystemAudioCapture"
 import { MicrophoneCapture } from "./audio/MicrophoneCapture"
 import { AudioDevices } from "./audio/AudioDevices"
@@ -1217,20 +1215,14 @@ import { loadNativeModule } from "./audio/nativeModuleLoader"
 import { GoogleSTT } from "./audio/GoogleSTT"
 import { RestSTT } from "./audio/RestSTT"
 import { DeepgramStreamingSTT } from "./audio/DeepgramStreamingSTT"
-import { isIntelligenceFlagEnabled } from "./intelligence/intelligenceFlags"
-import { AutoAnswerController } from "./intelligence/autoAnswer/AutoAnswerController"
-import { createSmartTurnPredictor } from "./intelligence/autoAnswer/AutoAnswerTurnPredictor"
 import type { SpeechEdge } from "./audio/speechEdge"
 import { SonioxStreamingSTT } from "./audio/SonioxStreamingSTT"
 import { ElevenLabsStreamingSTT } from "./audio/ElevenLabsStreamingSTT"
 import { OpenAIStreamingSTT } from "./audio/OpenAIStreamingSTT"
 import { NativelyProSTT } from "./audio/NativelyProSTT"
 import { NvidiaNimStreamingSTT } from "./audio/NvidiaNimStreamingSTT"
-import { punctuationSourceFor } from "./llm/punctuationProvenance"
 import { ThemeManager } from "./ThemeManager"
-import { RAGManager } from "./rag/RAGManager"
 import { DatabaseManager } from "./db/DatabaseManager"
-import { warmupIntentClassifier } from "./llm"
 
 /** Unified type for all STT providers with optional extended capabilities */
 type STTProvider = (GoogleSTT | RestSTT | DeepgramStreamingSTT | SonioxStreamingSTT | ElevenLabsStreamingSTT | OpenAIStreamingSTT | NativelyProSTT | NvidiaNimStreamingSTT) & {
@@ -1238,6 +1230,20 @@ type STTProvider = (GoogleSTT | RestSTT | DeepgramStreamingSTT | SonioxStreaming
   setAudioChannelCount?: (count: number) => void;
   notifySpeechEnded?: () => void;
 };
+
+function punctuationSourceForStt(provider: string | undefined, isFinal: boolean): string {
+  if (provider === 'deepgram' || provider === 'google') {
+    return isFinal ? 'provider_final' : 'provider_interim';
+  }
+  return 'unavailable';
+}
+
+function isDeepgramDiarizationEnabled(): boolean {
+  const envValue = process.env.NATIVELY_SPEAKER_DIARIZATION_V1?.trim().toLowerCase();
+  if (envValue === '1' || envValue === 'true' || envValue === 'on') return true;
+  if (envValue === '0' || envValue === 'false' || envValue === 'off') return false;
+  return SettingsManager.getInstance().get('speakerDiarizationV1Enabled') === true;
+}
 
 type ScreenshotWindowMode = 'launcher' | 'overlay';
 
@@ -1261,17 +1267,6 @@ export interface LocalWhisperRecoveryNotice {
   message: string;
 }
 
-/** Family-keyed recovery notice for the generalized ONNX load sentinel.
- *  Each `family` corresponds to one of the local model consumers wired to
- *  `electron/utils/onnxLoadSentinel.ts`. Renderer pulls via the
- *  `onnx-get-recovery-notice` IPC, one-shot drained through AppState. */
-export type OnnxRecoveryFamily = 'whisper' | 'intent' | 'embeddings' | 'reranker';
-export interface OnnxRecoveryNotice {
-  family: OnnxRecoveryFamily;
-  badModelId: string;
-  message: string;
-}
-
 type ScreenshotCaptureKind = 'full' | 'selective';
 
 interface ScreenshotCaptureSession {
@@ -1279,33 +1274,17 @@ interface ScreenshotCaptureSession {
   wasMainWindowVisible: boolean;
   windowMode: ScreenshotWindowMode;
   wasSettingsVisible: boolean;
-  wasModelSelectorVisible: boolean;
+  wasChatGptWebVisible: boolean;
+  wasChatGptWebFocused: boolean;
   overlayBounds: Electron.Rectangle | null;
   overlayDisplayId: number | null;
   restoreWithoutFocus: boolean;
 }
 
-// Premium: Knowledge modules loaded conditionally
-let KnowledgeOrchestratorClass: any = null;
-let KnowledgeDatabaseManagerClass: any = null;
-// Phase 1: shared comp-evidence detector for transcript-aware intent routing.
-let textHasCompEvidence: ((text: string) => boolean) | null = null;
-try {
-    KnowledgeOrchestratorClass = require('../premium/electron/knowledge/KnowledgeOrchestrator').KnowledgeOrchestrator;
-    KnowledgeDatabaseManagerClass = require('../premium/electron/knowledge/KnowledgeDatabaseManager').KnowledgeDatabaseManager;
-    textHasCompEvidence = require('../premium/electron/knowledge/NegotiationConversationTracker').textHasCompEvidence;
-} catch {
-    console.log('[Main] Knowledge modules not available — profile intelligence disabled.');
-}
-
 import { CredentialsManager } from "./services/CredentialsManager"
 import { SettingsManager } from "./services/SettingsManager"
-import { PhoneMirrorService, shouldStartPhoneMirrorOnBoot } from "./services/PhoneMirrorService"
-import { describePageCaptureFallback, describeDoubleCaptureFailure, PAGE_CAPTURE_FALLBACK_CHANNEL, PAGE_CAPTURE_STARTED_CHANNEL } from "./services/pageCaptureFallback"
 import { setVerboseLoggingFlag } from "./verboseLog"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
-import { OllamaManager } from './services/OllamaManager'
-import { ProviderStatusRegistry } from './services/ProviderStatusRegistry'
 import { decideToggle, decideDockTransition } from './services/toggleStateReducer'
 import { NativeOomTrace } from './utils/NativeOomTrace'
 import { setStealthHookAvailabilityProvider } from './utils/windowsFocusPolicy'
@@ -1343,20 +1322,15 @@ export class AppState {
 
   private windowHelper: WindowHelper
   public settingsWindowHelper: SettingsWindowHelper
-  public modelSelectorWindowHelper: ModelSelectorWindowHelper
   public cropperWindowHelper: CropperWindowHelper
+  public chatGptWebWindowHelper: ChatGptWebWindowHelper
   private screenshotHelper: ScreenshotHelper
-  public processingHelper: ProcessingHelper
-
-  private intelligenceManager: IntelligenceManager
+  private meetingSessionManager: MeetingSessionManager
   private themeManager: ThemeManager
-  private ragManager: RAGManager | null = null
-  private modeReferenceRetryPromise: Promise<void> | null = null
   private stabilityHeartbeatTimer: NodeJS.Timeout | null = null
   // Diagnostic-only, independently paced native-memory sampler. Normal product
   // heartbeats remain at 30 seconds; this exists only for a short-lived OOM run.
   private nativeOomTraceTimer: NodeJS.Timeout | null = null
-  private knowledgeOrchestrator: any = null
 
   public recordNativeOomTrace(event: string, data: Record<string, unknown> = {}): void {
     nativeOomTrace.record(event, data)
@@ -1385,15 +1359,6 @@ export class AppState {
   private view: "queue" | "solutions" = "queue"
   private isUndetectable: boolean = false
 
-  private problemInfo: {
-    problem_statement: string
-    input_format: Record<string, any>
-    output_format: Record<string, any>
-    constraints: Array<Record<string, any>>
-    test_cases: Array<Record<string, any>>
-  } | null = null // Allow null
-
-  private hasDebugged: boolean = false
   private isMeetingActive: boolean = false; // Guard for session state leaks
   private _meetingGeneration = 0;
   // Serializes start/stop so two transitions can never interleave. This is the
@@ -1423,21 +1388,13 @@ export class AppState {
   // Tracks remembered output device so reconfigureAudio can no-op when nothing changed.
   // Mirrors the existing _lastRequestedInputDeviceId for the input side.
   private _lastRequestedOutputDeviceId: string | undefined = undefined;
-  // Promise representing in-flight endMeeting background teardown (STT.stop +
-  // intelligenceManager.stopMeeting + RAG cleanup). startMeeting() awaits this
+  // Promise representing in-flight endMeeting background teardown (STT stop +
+  // raw meeting persistence). startMeeting() awaits this
   // before booting a new session so the shared STT instances are not torn down
   // mid-meeting by a stale teardown task.
   private _pendingTeardown: Promise<void> | null = null;
-  // Tracks meeting IDs currently being processed by processCompletedMeetingForRAG.
-  // Without this guard, a rapid stop→start→stop cycle could enqueue the same
-  // meeting for RAG twice (e.g. recovery retry + normal completion), duplicating
-  // embedding work, slowing the meeting-end perceived latency, and racing the
-  // SQLite INSERT OR IGNORE that protects against duplicates.
-  private _ragProcessingInFlight: Set<string> = new Set();
   private _isQuitting: boolean = false;
   private _verboseLogging: boolean = false;
-  private _ambientChatEnabled: boolean = false;
-  private _autoAnswerEnabled: boolean = false;
   // Tracks whether STT sample-rate has been applied for the current capture
   // session. Reset on every reconfigureAudio / new pipeline build so the next
   // first-chunk handler reads the freshly-detected native rate.
@@ -1446,10 +1403,8 @@ export class AppState {
   // Per-speaker throttle for the display-only `native-audio-transcript` IPC.
   // Finals are sent immediately; partials coalesce to latest-wins within
   // PARTIAL_TRANSCRIPT_THROTTLE_MS so a fast STT (e.g. OpenAI per-delta partials)
-  // can't flood both windows with near-per-token IPC during a long meeting
-  // (audit finding #7). The answer path (intelligenceManager.handleTranscript /
-  // RAG feed) runs BEFORE this send and is unaffected — this only paces the
-  // renderer's rolling transcript bar, which renders the latest preview anyway.
+  // can't flood both windows with near-per-token IPC during a long meeting.
+  // This only paces the renderer's rolling transcript bar.
   private static readonly PARTIAL_TRANSCRIPT_THROTTLE_MS = 100;
   private _transcriptPartialThrottle = new Map<string, {
     timer: ReturnType<typeof setTimeout> | null;
@@ -1458,32 +1413,9 @@ export class AppState {
   private _disguiseTimers: NodeJS.Timeout[] = []; // Track forceUpdate timeouts
   private _dockDebounceTimer: NodeJS.Timeout | null = null; // Debounce dock state changes
   private _dockReassertTimers: NodeJS.Timeout[] = []; // Self-verifying dock-enforcement retry timers
-  private _ollamaBootstrapPromise: Promise<void> | null = null;
   private screenshotCaptureInProgress: boolean = false;
   private localWhisperRecoveryNotice: LocalWhisperRecoveryNotice | null = null;
-  // Family-keyed stash for the generalized ONNX load-sentinel recovery
-  // notices (intent / embeddings / reranker). Whisper keeps its dedicated
-  // channel for backward-compat with the shipped renderer banner.
-  private onnxRecoveryNotices: Partial<Record<OnnxRecoveryFamily, OnnxRecoveryNotice>> = {};
 
-
-  // Processing events
-  public readonly PROCESSING_EVENTS = {
-    //global states
-    UNAUTHORIZED: "procesing-unauthorized",
-    NO_SCREENSHOTS: "processing-no-screenshots",
-
-    //states for generating the initial solution
-    INITIAL_START: "initial-start",
-    PROBLEM_EXTRACTED: "problem-extracted",
-    SOLUTION_SUCCESS: "solution-success",
-    INITIAL_SOLUTION_ERROR: "solution-error",
-
-    //states for processing the debugging
-    DEBUG_START: "debug-start",
-    DEBUG_SUCCESS: "debug-success",
-    DEBUG_ERROR: "debug-error"
-  } as const
 
   constructor() {
     // 1. Load boot-critical settings first (used by WindowHelpers)
@@ -1492,36 +1424,7 @@ export class AppState {
     this.disguiseMode = normalizeDisguiseMode(settingsManager.get('disguiseMode'));
     this._verboseLogging = settingsManager.get('verboseLogging') ?? true;
     setVerboseLoggingFlag(this._verboseLogging);
-    this._ambientChatEnabled = settingsManager.get('ambientChatEnabled') ?? false;
-    this._autoAnswerEnabled = settingsManager.get('autoAnswerEnabled') ?? false;
-    console.log(`[AppState] Initialized with isUndetectable=${this.isUndetectable}, disguiseMode=${this.disguiseMode}, verboseLogging=${this._verboseLogging}, ambientChatEnabled=${this._ambientChatEnabled}, autoAnswerEnabled=${this._autoAnswerEnabled}`);
-
-    // Context Intelligence debug logging (Developer settings). Bind the level
-    // reader + log directory once; precedence (env > setting) and the
-    // production content-mode rejection live in debug-config itself. The log
-    // directory is the platform application-log dir (~/Library/Logs/<app> on
-    // macOS) — spec'd location, kept out of userData so "clear logs" can never
-    // touch app data.
-    try {
-      const { bindContextDebugConfig, describeContextDebugConfig } = require('./context-intelligence/debug/debug-config');
-      const { bindContextDebugLogDirectory } = require('./context-intelligence/debug/jsonl-writer');
-      bindContextDebugConfig({
-        readStoredLevel: () => {
-          try { return SettingsManager.getInstance().get('contextDebugLevel'); } catch { return undefined; }
-        },
-        isProductionBuild: app.isPackaged,
-      });
-      bindContextDebugLogDirectory(path.join(app.getPath('logs'), 'context-debug'));
-      const dbg = describeContextDebugConfig();
-      if (dbg.level !== 'off') {
-        console.log(`[CONTEXT_DEBUG] level=${dbg.level} (source: ${dbg.levelSource})`);
-      }
-      if (dbg.contentInclusion) {
-        console.warn('[CONTEXT_DEBUG_WARNING] Full local evidence logging is enabled. Logs may contain sensitive personal data.');
-      }
-    } catch (e) {
-      console.warn('[AppState] context-debug binding failed (logging disabled):', (e as Error)?.message);
-    }
+    console.log(`[AppState] Initialized with isUndetectable=${this.isUndetectable}, disguiseMode=${this.disguiseMode}, verboseLogging=${this._verboseLogging}`);
 
     // Teach the no-activate window policy how to detect the native stealth
     // typing hook, BEFORE any window is created. On Windows the policy makes the
@@ -1543,17 +1446,15 @@ export class AppState {
     // 2. Initialize Helpers with loaded state
     this.windowHelper = new WindowHelper(this)
     this.settingsWindowHelper = new SettingsWindowHelper()
-    this.modelSelectorWindowHelper = new ModelSelectorWindowHelper()
     this.cropperWindowHelper = new CropperWindowHelper()
+    this.chatGptWebWindowHelper = new ChatGptWebWindowHelper()
 
     // 3. Initialize other helpers
     this.screenshotHelper = new ScreenshotHelper(this.view)
-    this.processingHelper = new ProcessingHelper(this)
-
     this.windowHelper.setContentProtection(this.isUndetectable);
     this.settingsWindowHelper.setContentProtection(this.isUndetectable);
-    this.modelSelectorWindowHelper.setContentProtection(this.isUndetectable);
     this.cropperWindowHelper.setContentProtection(this.isUndetectable);
+    this.chatGptWebWindowHelper.setContentProtection(this.isUndetectable);
 
     if (process.platform === 'win32' || process.platform === 'darwin') {
       this.cropperWindowHelper.preload();
@@ -1677,56 +1578,6 @@ export class AppState {
       }
     });
 
-    // Generalized ONNX load-sentinel consume (intent / embeddings / reranker).
-    // Runs UNCONDITIONALLY — these families are loaded on demand and a poisoned
-    // disk sentinel must be consumed regardless of the user's STT selection.
-    // Each consumer seeds its own in-memory poison flag so the first call
-    // (warmup, embed, rerank) fast-fails and the user sees a degraded
-    // experience instead of a crashloop.
-    setImmediate(() => {
-      try {
-        const { consumeIntentClassifierSentinel } = require('./llm/IntentClassifier');
-        const { consumeLocalEmbeddingSentinel } = require('./rag/providers/LocalEmbeddingProvider');
-        const { consumeLocalRerankerSentinel } = require('./rag/LocalReranker');
-
-        const intentPoisoned = consumeIntentClassifierSentinel();
-        if (intentPoisoned) {
-          const message = `Recovered from an intent classifier crash. ${intentPoisoned.modelId} is skipped this launch — falling back to regex/heuristic intent.`;
-          console.warn(`[AppState] ${message}`);
-          this.setOnnxRecoveryNotice('intent', {
-            family: 'intent',
-            badModelId: intentPoisoned.modelId,
-            message,
-          });
-        }
-
-        const embeddingPoisoned = consumeLocalEmbeddingSentinel();
-        if (embeddingPoisoned) {
-          const message = `Recovered from a local embedding crash. ${embeddingPoisoned.modelId} is skipped this launch — retrieval falls back to lexical.`;
-          console.warn(`[AppState] ${message}`);
-          this.setOnnxRecoveryNotice('embeddings', {
-            family: 'embeddings',
-            badModelId: embeddingPoisoned.modelId,
-            message,
-          });
-        }
-
-        const rerankerPoisoned = consumeLocalRerankerSentinel();
-        if (rerankerPoisoned) {
-          const message = `Recovered from a local reranker crash. ${rerankerPoisoned.modelId} is skipped this launch — retrieval falls back to cosine top-K.`;
-          console.warn(`[AppState] ${message}`);
-          this.setOnnxRecoveryNotice('reranker', {
-            family: 'reranker',
-            badModelId: rerankerPoisoned.modelId,
-            message,
-          });
-        }
-      } catch (e: any) {
-        // Non-fatal — a missing or broken consume helper must never brick startup.
-        console.warn('[AppState] ONNX sentinel consume skipped (non-fatal):', e?.message || e);
-      }
-    });
-
     // Initialize KeybindManager
     const keybindManager = KeybindManager.getInstance();
     keybindManager.setWindowHelper(this.windowHelper);
@@ -1758,8 +1609,8 @@ export class AppState {
       const { StealthKeyboardManager } = require('./services/StealthKeyboardManager');
       const stealth = StealthKeyboardManager.getInstance();
       // Only the overlay renderer may ENGAGE the system-wide keyboard hook.
-      // stealth-tap:start had no sender check, so any renderer (settings,
-      // cropper, model-selector) — or a compromised one — could turn on
+      // stealth-tap:start had no sender check, so any renderer (settings or
+      // cropper) — or a compromised one — could turn on
       // keystroke capture. Keystrokes still only ever flow to the overlay (see
       // StealthKeyboardManager.overlayWebContents scoping), so this is a
       // start-authority gate, not a read gate; but engaging capture is itself a
@@ -1842,178 +1693,6 @@ export class AppState {
         } else if (actionId === 'general:selective-screenshot') {
           const mainWindow = this.getMainWindow();
           this.sendToWindow(mainWindow, 'global-shortcut', { action: 'selectiveScreenshot' });
-        } else if (actionId === 'general:capture-and-process') {
-          // Single-trigger: capture current screen then immediately request AI analysis
-          await this.captureScreenAndProcess();
-
-        } else if (actionId === 'general:capture-dom') {
-          // One hotkey, the right capture: if the companion browser extension is
-          // connected, ask it to grab the active tab's page context (delivered to
-          // the overlay via /dom). If it isn't reachable — not in a browser, SW
-          // asleep, Phone Mirror off — fall back to a screenshot automatically so
-          // the gesture always does something. See natively-browser/README.md.
-          let captured = false;
-          let domFailureReason = '';
-          // Announce the in-flight capture so a fast follow-up ⌘Enter (the
-          // one-motion ⌘Y→Enter flow) waits for delivery instead of racing it.
-          this.sendToWindow(
-            this.windowHelper?.getOverlayWindow?.() ?? this.getMainWindow(),
-            PAGE_CAPTURE_STARTED_CHANNEL,
-            { at: Date.now() },
-          );
-          try {
-            const svc = PhoneMirrorService.getInstance();
-            // MV3 race fix: the extension's service worker may have been idle-killed
-            // and is only just reconnecting (its wake-on-interaction handlers fire as
-            // the user touches the browser right before capturing). Poll briefly for
-            // an extension to connect before deciding — otherwise a just-woken SW
-            // would fall straight through to a screenshot. waitForExtension resolves
-            // immediately when one is already connected.
-            const extReady = svc.isRunning() && (await svc.waitForExtension());
-            if (extReady) {
-              const result = await svc.requestDomCapture();
-              captured = result.ok;
-              if (captured) {
-                // The extension only acks `done` after /dom returns 200, so by here
-                // the overlay has already received the page context (it surfaces a
-                // "Page context" pill and uses it on the next answer).
-                console.log('[Main] DOM capture delivered to overlay');
-              } else {
-                domFailureReason = String(result.reason || 'unknown');
-                console.log('[Main] DOM capture unavailable (', result.reason, ') — falling back to screenshot');
-              }
-            } else {
-              domFailureReason = 'browser extension not connected';
-            }
-          } catch (e: any) {
-            domFailureReason = String(e?.message || e);
-            console.warn('[Main] DOM capture error — falling back to screenshot:', e?.message || e);
-          }
-          if (!captured) {
-            // Tell the overlay WHY the page capture became a screenshot. The
-            // fallback is by design, but doing it silently made the hotkey look
-            // broken — the user only saw "Screenshot attached" with no hint that
-            // the extension wasn't connected / this site wasn't granted
-            // (2026-08-18 report). The notice renders as a warn-tone status pill.
-            const fallbackNotice = describePageCaptureFallback(domFailureReason);
-            // Target the OVERLAY window explicitly: the only listener lives in
-            // NativelyInterface, which mounts there — getMainWindow() returns
-            // the launcher in launcher mode, where the notice would be dropped
-            // (same reason /dom delivery resolves the overlay window).
-            const noticeWindow = () => this.windowHelper?.getOverlayWindow?.() ?? this.getMainWindow();
-            // Both legs of this fallback can fail, and the screenshot's throw used
-            // to propagate to the outer handler and mask the DOM reason entirely —
-            // the user saw an unrelated "Failed to capture screen" (or, since that
-            // handler only logs, nothing at all). Report BOTH causes together, and
-            // name the actionable one: a host that was never granted is fixed by
-            // one click in the extension popup, not by screen-recording settings.
-            try {
-              await this.captureScreenAndProcess();
-              // Only now is "a screenshot was attached instead" true — sending
-              // the notice before the screenshot would lie when it also fails.
-              this.sendToWindow(noticeWindow(), PAGE_CAPTURE_FALLBACK_CHANNEL, fallbackNotice);
-            } catch (shotErr: any) {
-              this.sendToWindow(
-                noticeWindow(),
-                PAGE_CAPTURE_FALLBACK_CHANNEL,
-                describeDoubleCaptureFailure(domFailureReason, shotErr, process.platform),
-              );
-              // The extension reports an ungranted host as the outcome kind
-              // 'needs-host-permission' (not Chrome's raw wording) — the shared
-              // mapper matches both, so reuse it instead of a local regex that
-              // silently drifted from what actually flows over the channel.
-              const needsHost = fallbackNotice.kind === 'needs-host-permission';
-              console.error(
-                '[Main] Capture failed on BOTH paths.\n' +
-                  `  • Page context: ${domFailureReason || 'unavailable'}\n` +
-                  `  • Screenshot:   ${shotErr?.message || shotErr}\n` +
-                  (needsHost
-                    ? '  → Chrome has not granted this site to the extension. Click the Natively\n' +
-                      '    extension icon and press Capture once to grant it (one site, one click).\n'
-                    : '') +
-                  '  → Screenshot capture additionally requires Screen Recording permission\n' +
-                  '    (System Settings › Privacy & Security › Screen Recording).',
-              );
-            }
-          }
-
-        // --- STEALTH SHORTCUTS: no focus, no show, pure IPC dispatch ---
-
-        // Chat actions — fire into the renderer without focusing the window
-        } else if (actionId === 'chat:focusInput') {
-          // Toggle stealth typing mode. While engaged, every keystroke is
-          // captured at the OS input layer and routed to the renderer; the
-          // foreground app (Zoom/browser/etc.) does NOT receive any key events
-          // and never loses key/frontmost status. macOS uses a CGEventTap;
-          // Windows uses a WH_KEYBOARD_LL hook — both close the gap that a
-          // window-focus-based input path would open (the meeting app blurring
-          // the instant the overlay took focus). See StealthKeyboardManager.
-          // Platform-agnostic: the native module exports the same
-          // StealthKeyboardTap on macOS and Windows. isAvailable() is false only
-          // if the binary predates this feature (needs `npm run build:native`),
-          // on Linux, or (win32) while a CJK IME is active.
-          const { StealthKeyboardManager } = require('./services/StealthKeyboardManager');
-          const mgr = StealthKeyboardManager.getInstance();
-          // Capture the engaged state BEFORE showMainWindow: in launcher mode
-          // showMainWindow routes through switchToLauncher, which stops stealth,
-          // so a toggle() afterward would ALWAYS see inactive and always start
-          // (never disengage, and re-engage with the overlay hidden). Branch on
-          // the pre-show state instead of relying on toggle().
-          const wasStealthActive = mgr.isAvailable() && mgr.isActive();
-          this.showMainWindow(true);
-          const overlay = this.windowHelper.getOverlayWindow();
-          this.sendToWindow(overlay, 'ensure-expanded');
-          if (mgr.isAvailable()) {
-            // start() itself refuses on win32 if the overlay isn't visible, so
-            // pressing this in launcher mode is a safe no-op there.
-            if (wasStealthActive) mgr.stop();
-            else mgr.start();
-            return; // the hook/tap is the input path; never focus the overlay
-          }
-
-          // No native stealth path (stale binary, or Linux, or a CJK IME made
-          // isAvailable() false). Surface the input and focus the window so the
-          // user can actually type — EXCEPT on Windows, where the overlay is
-          // WS_EX_NOACTIVATE and focusing it would steal the meeting app's
-          // foreground (the regression this feature removes; there the user
-          // rebuilds the native module to get capture). On macOS this focus()
-          // is what promotes the non-activating panel to key window so the DOM
-          // input receives keystrokes — dropping it unconditionally (as an
-          // earlier revision did) broke the macOS no-tap fallback and left
-          // Linux, which always takes this branch, unable to focus at all.
-          if (overlay && !overlay.isDestroyed()) {
-            this.sendToWindow(overlay, 'global-shortcut', { action: 'focusInput' });
-            if (process.platform !== 'win32') overlay.focus();
-          }
-        } else if (
-          actionId === 'chat:whatToAnswer' ||
-          actionId === 'chat:clarify' ||
-          actionId === 'chat:followUp' ||
-          actionId === 'chat:answer' ||
-          actionId === 'chat:codeHint' ||
-          actionId === 'chat:brainstorm' ||
-          actionId === 'chat:dynamicAction4' ||
-          actionId === 'chat:scrollUp' ||
-          actionId === 'chat:scrollDown' ||
-          actionId === 'chat:scrollLeft' ||
-          actionId === 'chat:scrollRight'
-        ) {
-          const actionMap: Record<string, string> = {
-            'chat:whatToAnswer': 'whatToAnswer',
-            'chat:clarify': 'clarify',
-            'chat:followUp': 'followUp',
-            'chat:answer': 'answer',
-            'chat:codeHint': 'codeHint',
-            'chat:brainstorm': 'brainstorm',
-            'chat:dynamicAction4': 'dynamicAction4',
-            'chat:scrollUp': 'scrollUp',
-            'chat:scrollDown': 'scrollDown',
-            'chat:scrollLeft': 'scrollLeft',
-            'chat:scrollRight': 'scrollRight',
-          };
-          const action = actionMap[actionId];
-          this.sendToMeetingSurfaces('global-shortcut', { action });
-
         // Window movement — move window position without focus change
         } else if (actionId === 'window:move-up') {
           this.windowHelper.moveWindowUp();
@@ -2024,11 +1703,6 @@ export class AppState {
         } else if (actionId === 'window:move-right') {
           this.windowHelper.moveWindowRight();
 
-        // General actions that are now global (stealth)
-        } else if (actionId === 'general:process-screenshots') {
-          this.sendToMeetingSurfaces('global-shortcut', { action: 'processScreenshots' });
-        } else if (actionId === 'general:reset-cancel') {
-          this.sendToMeetingSurfaces('global-shortcut', { action: 'resetCancel' });
         }
       } catch (e: any) {
         if (e.message !== "Selection cancelled" && e.message !== "Screenshot capture already in progress") {
@@ -2039,65 +1713,17 @@ export class AppState {
 
     // Inject WindowHelper into other helpers
     this.settingsWindowHelper.setWindowHelper(this.windowHelper);
-    this.modelSelectorWindowHelper.setWindowHelper(this.windowHelper);
 
 
 
 
 
-    // Initialize IntelligenceManager with LLMHelper
-    this.intelligenceManager = new IntelligenceManager(this.processingHelper.getLLMHelper())
+    // Raw-session persistence only. This manager never invokes generation,
+    // retrieval, embeddings, profile intelligence, or answer engines.
+    this.meetingSessionManager = new MeetingSessionManager()
 
     // Initialize ThemeManager
     this.themeManager = ThemeManager.getInstance()
-
-    // Restore toggle states that live in LLMHelper memory.
-    // This MUST happen here — not inside initializeRAGManager() — so that
-    // it runs unconditionally regardless of whether premium modules are available.
-    // Previously, groqFastTextMode restore was inside the KnowledgeOrchestrator
-    // block which silently skips when premium modules are absent.
-    {
-      const llmHelper = this.processingHelper.getLLMHelper();
-      if (settingsManager.get('groqFastTextMode')) {
-        llmHelper.setGroqFastTextMode(true);
-        console.log('[AppState] Fast mode restored from settings');
-      }
-      llmHelper.setCodexCliConfig({
-        enabled: !!settingsManager.get('codexCliEnabled'),
-        path: settingsManager.get('codexCliPath') || 'codex',
-        model: settingsManager.get('codexCliModel') || 'gpt-5.4',
-        fastModel: settingsManager.get('codexCliFastModel') || 'gpt-5.3-codex-spark',
-        timeoutMs: settingsManager.get('codexCliTimeoutMs') || 60_000,
-        sandboxMode: settingsManager.get('codexCliSandboxMode') || 'read-only',
-        serviceTier: settingsManager.get('codexCliServiceTier') || 'default',
-        modelReasoningEffort: settingsManager.get('codexCliModelReasoningEffort'),
-      });
-    }
-
-    // Initialize RAGManager (requires database to be ready)
-    this.initializeRAGManager()
-
-    // Check and prep Ollama embedding model
-    this.bootstrapOllamaEmbeddings()
-
-    // Prime the optional Hindsight long-term-memory server health cache (settings/env
-    // config; Noop when unconfigured). Fire-and-forget — never blocks startup.
-    try {
-      const { HindsightManager } = require('./services/HindsightManager');
-      HindsightManager.getInstance().start().catch(() => { /* never blocks startup */ });
-    } catch { /* optional */ }
-
-    this.setupIntelligenceEvents()
-
-    ProviderStatusRegistry.getInstance().setBroadcaster((channel, payload) => {
-      this.broadcast(channel, payload);
-    });
-
-    // Intent-classifier warmup is scheduled after the launcher is visible so
-    // transformers/ONNX initialization cannot contend with the first paint.
-
-    // Setup Ollama IPC
-    this.setupOllamaIpcHandlers()
 
     // --- NEW SYSTEM AUDIO PIPELINE (SOX + NODE GOOGLE STT) ---
     // LAZY INIT: Do not setup pipeline here to prevent launch volume surge.
@@ -2115,15 +1741,6 @@ export class AppState {
     const emit = () => {
       try {
         const mem = process.memoryUsage();
-        const flags = {
-          ragConfidenceGate: isIntelligenceFlagEnabled('ragConfidenceGate'),
-          ragLocalRerank: isIntelligenceFlagEnabled('ragLocalRerank'),
-          ragSpeculativeRerank: isIntelligenceFlagEnabled('ragSpeculativeRerank'),
-          okfKnowledgePacks: isIntelligenceFlagEnabled('okfKnowledgePacks'),
-          okfHybridRetrieval: isIntelligenceFlagEnabled('okfHybridRetrieval'),
-          jitFinalAnswerEnforced: isIntelligenceFlagEnabled('jitFinalAnswerEnforced'),
-          hindsightMemory: isIntelligenceFlagEnabled('hindsightMemory'),
-        };
         // PER-PROCESS memory breakdown (2026-07-10 leak diagnosis): the
         // main-process RSS above cannot tell us WHICH process is growing.
         // app.getAppMetrics() reports RSS per Chromium process (Browser=main,
@@ -2136,7 +1753,7 @@ export class AppState {
           const { app: eApp, BrowserWindow, webContents } = require('electron');
           // Build a pid → window-label map so a leaking "Tab" (renderer) is
           // attributable to a SPECIFIC window (launcher / overlay / cropper /
-          // settings / model-selector). getAppMetrics() only reports the process
+          // settings). getAppMetrics() only reports the process
           // TYPE + pid, not which renderer it is — so on the Windows repro we
           // couldn't tell WHICH renderer ballooned. Match each live webContents'
           // OS process id to its window URL's ?window= param.
@@ -2178,7 +1795,6 @@ export class AppState {
           totalMemMB: mb(os.totalmem()),
           uptimeSec: Math.round(process.uptime()),
           isMeetingActive: this.isMeetingActive,
-          flags,
           wal: collectWalSnapshot(),
           // Per-process working-set RSS (MB) — leak-attribution / stability signal.
           procMem,
@@ -2354,7 +1970,6 @@ export class AppState {
   public sendModelChanged(modelId: string): void {
     const targets = [
       this.getWindowHelper().getOverlayWindow(),
-      this.modelSelectorWindowHelper.getWindow(),
     ];
     const seen = new Set<number>();
     for (const win of targets) {
@@ -2379,346 +1994,6 @@ export class AppState {
 
   private broadcastMeetingState(): void {
     this.broadcast('meeting-state-changed', { isActive: this.isMeetingActive });
-  }
-
-  // Public so the reference-file upload IPC handler can kick a retry for a
-  // file that landed in 'failed'/'lexical_only' during the embedder warm-up
-  // window (the boot-time scheduler only sees files that existed at start).
-  public scheduleModeReferenceIndexRetry(): void {
-    if (this.modeReferenceRetryPromise) return;
-    const pipeline = this.ragManager?.getEmbeddingPipeline();
-    if (!pipeline) return;
-
-    this.modeReferenceRetryPromise = pipeline.waitForReady(15000).then(async () => {
-      const { ModesManager } = require('./services/ModesManager');
-      const modesManager = ModesManager.getInstance();
-      await modesManager.retryAllLexicalOnlyFiles().catch(() => { /* logged inside */ });
-    }).catch(() => { /* provider unavailable — lexical fallback remains valid */ })
-      .finally(() => { this.modeReferenceRetryPromise = null; });
-  }
-
-  private async bootstrapOllamaEmbeddings() {
-    this._ollamaBootstrapPromise = (async () => {
-      try {
-        // SKIP when a cloud embedding provider is already available. Pulling the
-        // 274MB `nomic-embed-text` on first launch is pure waste for users who
-        // have an OpenAI/Gemini key (the RAG pipeline resolves to that cloud
-        // provider anyway), and the background pull was racing the ModelSelector
-        // window's forceRestartOllama `kill -9` — leaving a "Setting up AI
-        // memory… 0%" pill stuck forever. Only bootstrap Ollama embeddings when
-        // there is NO cloud key, i.e. Ollama is genuinely the intended provider.
-        try {
-          const { CredentialsManager } = require('./services/CredentialsManager');
-          const cm = CredentialsManager.getInstance();
-          const hasCloudEmbeddingKey =
-            !!(cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY) ||
-            !!(cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY);
-          if (hasCloudEmbeddingKey) {
-            console.log('[AppState] Skipping Ollama embeddings bootstrap — a cloud embedding provider is configured.');
-            return;
-          }
-        } catch (guardErr: any) {
-          // Credential lookup failed — fall through and attempt the bootstrap.
-          console.warn('[AppState] Ollama bootstrap cloud-key guard failed (non-fatal):', guardErr?.message);
-        }
-
-        // PHASE-2C: capability resolver — even when no cloud key is
-        // configured, the user may have explicitly disabled Ollama (or
-        // configured a non-Ollama local provider). Without this gate, a fresh
-        // install's `spawn ollama` is wasted work that fills the log with
-        // ENOENT noise and can race the ModelSelector force-restart path.
-        // Only attempt to bootstrap when the user has not opted out.
-        try {
-          const { SettingsManager } = require('./services/SettingsManager');
-          const settings = SettingsManager.getInstance();
-          // Best-effort check — any missing key returns undefined and is
-          // treated as "no opt-out" (the bootstrap proceeds, matching
-          // pre-fix behavior). This is intentionally permissive: we only
-          // short-circuit when the user has clearly said NO.
-          const explicitNoOllama =
-            settings.get?.('disableOllamaBootstrap') === true ||
-            settings.get?.('localProvider') === 'none' ||
-            settings.get?.('localProvider') === 'cloud';
-          if (explicitNoOllama) {
-            console.log('[AppState] Skipping Ollama embeddings bootstrap — user has opted out (disableOllamaBootstrap/localProvider).');
-            return;
-          }
-        } catch (settingsErr: any) {
-          // Settings lookup is best-effort; failure here just falls through
-          // to the prior behavior.
-          console.warn('[AppState] Ollama bootstrap opt-out check failed (non-fatal):', settingsErr?.message);
-        }
-
-        const { OllamaBootstrap } = require('./rag/OllamaBootstrap');
-        const bootstrap = new OllamaBootstrap();
-
-        // Fire and forget — don't await this before showing the window
-        const result = await bootstrap.bootstrap('nomic-embed-text', (status: string, percent: number) => {
-          // Send progress to renderer via IPC
-          this.broadcast('ollama:pull-progress', { status, percent });
-        });
-
-        if (result === 'pulled' || result === 'already_pulled') {
-          this.broadcast('ollama:pull-complete');
-          // Re-resolve the embedding provider given that Ollama might now be available
-          if (this.ragManager) {
-             console.log('[AppState] Ollama model ready, re-evaluating RAG pipeline provider');
-             const { CredentialsManager } = require('./services/CredentialsManager');
-             const cm = CredentialsManager.getInstance();
-             this.ragManager.initializeEmbeddings({
-                openaiKey: cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY || undefined,
-                geminiKey: cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || undefined,
-                ollamaUrl: process.env.OLLAMA_URL || "http://localhost:11434",
-                providerDataScopes: (() => { try { const { SettingsManager } = require('./services/SettingsManager'); return SettingsManager.getInstance().get('providerDataScopes'); } catch { return undefined; } })()
-             });
-             this.scheduleModeReferenceIndexRetry();
-          }
-        }
-      } catch (err) {
-         console.error('[AppState] Failed to bootstrap Ollama:', err);
-      }
-    })();
-  }
-
-  private initializeRAGManager(): void {
-    try {
-      const db = DatabaseManager.getInstance();
-      const sqliteDb = db.getDb();
-
-      if (sqliteDb) {
-        const { CredentialsManager } = require('./services/CredentialsManager');
-        const cm = CredentialsManager.getInstance();
-        const openaiKey = cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY;
-        const geminiKey = cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
-        // Gemini embedding key POOL: credential key + all GEMINI_API_KEY(_2.._6)/GOOGLE
-        // env keys, de-duped. Lets the embedding provider rotate off a rate-limited
-        // key (429 → per-key cooldown → next key) instead of failing the index.
-        const geminiKeys = (() => {
-          const pool: string[] = [];
-          const add = (k?: string) => { const v = (k || '').trim(); if (v && !pool.includes(v)) pool.push(v); };
-          add(cm.getGeminiApiKey());
-          for (const n of ['GEMINI_API_KEY', 'GEMINI_API_KEY_2', 'GEMINI_API_KEY_3', 'GEMINI_API_KEY_4', 'GEMINI_API_KEY_5', 'GEMINI_API_KEY_6', 'GOOGLE_API_KEY']) add(process.env[n]);
-          return pool;
-        })();
-
-        const providerDataScopes = (() => { try { const { SettingsManager } = require('./services/SettingsManager'); return SettingsManager.getInstance().get('providerDataScopes'); } catch { return undefined; } })();
-        this.ragManager = new RAGManager({
-            db: sqliteDb,
-            dbPath: db.getDbPath(),
-            extPath: db.getExtPath(),
-            openaiKey,
-            geminiKey,
-            geminiKeys,
-            ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
-            providerDataScopes
-        });
-        this.ragManager.setLLMHelper(this.processingHelper.getLLMHelper());
-
-        // Modes reference files must use the same initialized EmbeddingPipeline as
-        // the main RAG stack. A private, never-initialized pipeline marks every
-        // upload as lexical_only even after Gemini/Ollama embeddings are ready.
-        const { ModesManager } = require('./services/ModesManager');
-        const modeEmbeddingPipeline = this.ragManager.getEmbeddingPipeline();
-        ModesManager.getInstance().setSharedEmbeddingPipeline(modeEmbeddingPipeline);
-        this.scheduleModeReferenceIndexRetry();
-
-        // Context Intelligence V3: hand the engine LAZY access to the meeting
-        // retriever. IntelligenceManager was constructed before this block, so a
-        // provider closure is passed rather than the instance — it also means a
-        // later RAGManager re-init is picked up without re-wiring.
-        try {
-          this.intelligenceManager?.setRagRetrieverProvider?.(
-            () => this.ragManager?.getRetriever() ?? null,
-          );
-        } catch (e) { console.warn('[AppState] V3 meeting retriever wiring skipped:', e); }
-
-        console.log('[AppState] RAGManager initialized');
-      }
-    } catch (error) {
-      console.error('[AppState] Failed to initialize RAGManager:', error);
-    }
-
-    // Initialize Knowledge Orchestrator
-    try {
-      const db = DatabaseManager.getInstance();
-      const sqliteDb = db.getDb();
-
-      if (sqliteDb && KnowledgeDatabaseManagerClass && KnowledgeOrchestratorClass) {
-        const knowledgeDb = new KnowledgeDatabaseManagerClass(sqliteDb);
-        this.knowledgeOrchestrator = new KnowledgeOrchestratorClass(knowledgeDb);
-
-        // Role Insight owns its own tables in the same SQLite file. It needs the
-        // raw handle, which KnowledgeDatabaseManager does not expose, so it is
-        // attached here. Guarded: a failure disables only Role Insight.
-        try {
-          this.knowledgeOrchestrator.attachRoleInsight?.(sqliteDb);
-        } catch (e) {
-          console.warn('[AppState] Role Insight attach skipped:', e);
-        }
-
-        // Wire up LLM functions
-        const llmHelper = this.processingHelper.getLLMHelper();
-
-        // generateContent function for LLM calls
-        // Join ALL content parts (some callers — e.g. live negotiation coaching —
-        // pass [{text: systemPrefix}, {text: prompt}]; reading only [0] dropped the
-        // prompt). Single-item callers (extraction, script) are unaffected.
-        const joinContents = (contents: any[]) =>
-          (Array.isArray(contents) ? contents : [contents])
-            .map((c: any) => (typeof c === 'string' ? c : c?.text || ''))
-            .filter(Boolean)
-            .join('\n\n');
-        this.knowledgeOrchestrator.setGenerateContentFn(async (contents: any[]) => {
-          return await llmHelper.generateContentStructured(joinContents(contents));
-        });
-
-        // Low-latency generation for LIVE negotiation coaching (spoken in real
-        // time): Flash-first chain so the tactical note appears fast. The AOT
-        // negotiation script + all extraction keep the quality-first fn above.
-        if (typeof this.knowledgeOrchestrator.setLiveCoachingContentFn === 'function') {
-          this.knowledgeOrchestrator.setLiveCoachingContentFn(async (contents: any[]) => {
-            return await llmHelper.generateContentStructured(joinContents(contents), { preferFast: true });
-          });
-        }
-
-        // Company-research search provider (Tavily key → Natively API → none),
-        // resolved per AOT run so keys added/changed mid-session take effect.
-        // Same cascade the manual profile:research-company handler uses; without
-        // this the JD-upload AOT pipeline always fell back to LLM-only dossiers.
-        if (typeof this.knowledgeOrchestrator.setSearchProviderResolver === 'function') {
-          const {
-            resolveCompanySearchProvider,
-          } = require('./services/resolveCompanySearchProvider');
-          this.knowledgeOrchestrator.setSearchProviderResolver(resolveCompanySearchProvider);
-        }
-
-        // Embedding function — lazily delegate to the cascaded EmbeddingPipeline
-        // (OpenAI → Gemini → Ollama → Local bundled model).
-        // We await waitForReady() so uploads during boot wait for the pipeline
-        // instead of immediately throwing 'not ready'.
-        const self = this;
-        const embedWithProducerMetadata = async (text: string) => {
-          const pipeline = self.ragManager?.getEmbeddingPipeline();
-          if (!pipeline) throw new Error('RAG pipeline not available');
-          await pipeline.waitForReady();
-          return await pipeline.getEmbeddingWithFallback(text);
-        };
-        this.knowledgeOrchestrator.setEmbedFn(async (text: string) => {
-          return (await embedWithProducerMetadata(text)).embedding;
-        });
-        if (typeof this.knowledgeOrchestrator.setEmbedWithMetadataFn === 'function') {
-          this.knowledgeOrchestrator.setEmbedWithMetadataFn(embedWithProducerMetadata);
-        }
-        // Report the active document-embedder's composite space so the orchestrator
-        // can detect knowledge nodes embedded in an OLD space (e.g. after a
-        // gemini-embedding-001 → -2 upgrade) and re-embed them, instead of silently
-        // comparing v1 node vectors against v2 query vectors (same dims = no dim guard).
-        if (typeof this.knowledgeOrchestrator.setActiveSpaceFn === 'function') {
-          this.knowledgeOrchestrator.setActiveSpaceFn(() => {
-            return self.ragManager?.getEmbeddingPipeline()?.getActiveSpaceKey();
-          });
-        }
-        if (typeof this.knowledgeOrchestrator.setEmbedQueryFn === 'function') {
-          this.knowledgeOrchestrator.setEmbedQueryFn(async (text: string) => {
-            const pipeline = self.ragManager?.getEmbeddingPipeline();
-            if (!pipeline) throw new Error('RAG pipeline not available');
-            await pipeline.waitForReady();
-            return await pipeline.getEmbeddingForQuery(text);
-          });
-        }
-        // Fast on-device query embedder for the latency-critical knowledge path.
-        // The orchestrator dimension-checks `dimensions` against the index and
-        // only uses `embed` (bundled MiniLM, ~10ms) when compatible — otherwise
-        // it falls back to the cloud embedFn above so retrieval stays correct.
-        if (typeof this.knowledgeOrchestrator.setFastQueryEmbedFn === 'function') {
-          this.knowledgeOrchestrator.setFastQueryEmbedFn(() => {
-            const pipeline = self.ragManager?.getEmbeddingPipeline();
-            return {
-              dimensions: pipeline?.localDimensions ?? null,
-              // Composite space of the local embedder — the orchestrator gates the
-              // fast path on space identity (not just dimension), so a same-dim but
-              // different-space collision can't silently produce garbage similarity.
-              space: pipeline?.localSpaceKey ?? null,
-              embed: async (text: string) => {
-                if (!pipeline) return null;
-                // Await readiness so the FIRST cold-session question still gets the
-                // local fast path (the local fallback provider is only assigned
-                // once the pipeline finishes init). Without this, the very query
-                // prewarm targets would silently fall back to the cloud embedder.
-                // Swallow errors — getEmbeddingForQueryLocalOnly returns null on
-                // any failure and the orchestrator falls back to embedFn.
-                try { await pipeline.waitForReady(); } catch { /* fall through */ }
-                return await pipeline.getEmbeddingForQueryLocalOnly(text);
-              },
-            };
-          });
-        }
-
-        // Kick a knowledge re-embed once the embedding pipeline is ready. CRITICAL:
-        // the orchestrator's constructor fires refreshCache()→ensureEmbeddingSpace()
-        // BEFORE setActiveSpaceFn is wired above, so that initial pass no-ops (no active
-        // space yet). Without this explicit kick, a v1→v2 model upgrade would leave the
-        // resume/JD nodes stranded in the old space — _spaceGatedNodes would exclude them
-        // and semantic retrieval would silently return nothing until the user re-uploaded.
-        // This is the knowledge-base analogue of RAGManager.scheduleAutoReindex's self-heal.
-        if (typeof this.knowledgeOrchestrator.ensureEmbeddingSpace === 'function') {
-          const ko = this.knowledgeOrchestrator;
-          (async () => {
-            try {
-              await self.ragManager?.getEmbeddingPipeline()?.waitForReady();
-              await ko.ensureEmbeddingSpace();
-            } catch (e: any) {
-              console.warn('[main] Knowledge ensureEmbeddingSpace kick failed (non-fatal):', e?.message || e);
-            }
-          })();
-        }
-
-        // Phase 1: transcript-aware intent hint. The orchestrator (premium) has
-        // no SessionTracker reference (package boundary), so the app layer reads
-        // the rolling ~180s transcript here and hands back a lightweight verdict.
-        // We inspect only the last 1-2 INTERVIEWER turns for comp evidence — NOT
-        // the whole window (that caused topic-bleed) and NOT the candidate's own
-        // typed question (classified separately). Cheap + synchronous.
-        if (typeof this.knowledgeOrchestrator.setConversationContextProvider === 'function') {
-          this.knowledgeOrchestrator.setConversationContextProvider(() => {
-            if (!textHasCompEvidence) return null;
-            try {
-              const items = self.intelligenceManager?.getContext(180) ?? [];
-              const interviewerTurns = items.filter((i: any) => i.role === 'interviewer');
-              const lastTwo = interviewerTurns.slice(-2);
-              const lastInterviewerTurn = lastTwo.length ? lastTwo[lastTwo.length - 1].text : undefined;
-              const recentInterviewerComp = lastTwo.some((i: any) => textHasCompEvidence!(i.text));
-              return { recentInterviewerComp, lastInterviewerTurn };
-            } catch {
-              return null;
-            }
-          });
-        }
-
-        // Attach KnowledgeOrchestrator to LLMHelper
-        llmHelper.setKnowledgeOrchestrator(this.knowledgeOrchestrator);
-
-        // Restore persisted toggle states so UI reflects what the user left them as.
-        // NOTE: groqFastTextMode is now restored unconditionally in the AppState constructor
-        // so it is not repeated here.
-        const sm = SettingsManager.getInstance();
-        if (sm.get('knowledgeMode')) {
-          this.knowledgeOrchestrator.setKnowledgeMode(true);
-          console.log('[AppState] Knowledge mode restored from settings');
-          // Pre-warm the provider prompt cache off the hot path so the first
-          // question of the session doesn't pay full cold-prefill TTFT. Gated
-          // on knowledge mode being active AND a resume being present (only then
-          // is a session likely imminent). Best-effort, non-blocking.
-          if (this.knowledgeOrchestrator.isKnowledgeMode()) {
-            llmHelper.prewarmPromptCache().catch((_e: any): void => {});
-          }
-        }
-
-        console.log('[AppState] KnowledgeOrchestrator initialized');
-      }
-    } catch (error) {
-      console.error('[AppState] Failed to initialize KnowledgeOrchestrator:', error);
-    }
   }
 
   private setupAutoUpdater(): void {
@@ -3157,155 +2432,6 @@ export class AppState {
   private _audioTestStarting = false;               // P2-12: in-flight guard against concurrent calls
   private googleSTT: STTProvider | null = null; // Interviewer
   private googleSTT_User: STTProvider | null = null; // User
-  // ── AUTO ANSWER (Settings > General, default OFF) ────────────────────────
-  // `handleSuggestionTrigger` — the method IntelligenceEngine documents as
-  // "the primary auto-trigger path" — had no production caller: the only call
-  // site was the __e2e__:ask harness. The speculative prefetch that runs on
-  // interviewer PARTIALS never reaches the UI by design (runWhatShouldISay
-  // returns silently when `speculative`), it only warms a cache that
-  // handleSuggestionTrigger was supposed to consume. So automatic answers were
-  // dead in production and every answer came from the hotkey.
-  //
-  // The trigger is a FINAL interviewer transcript, NOT the native VAD's
-  // `speech_ended`. Driving it off the VAD fires `speech_hangover` (600 ms for
-  // system audio) + debounce after the audio stops, and `getLastInterviewerTurn()`
-  // only ever returns a FINAL turn (SessionTracker.addTranscript returns null on
-  // !final). For the REST providers `speech_ended` is what *starts* the upload
-  // (RestSTT.notifySpeechEnded), so the final cannot exist yet by construction,
-  // and streaming providers lose the race intermittently. Firing with a stale
-  // turn is worse than not firing: handleSuggestionTrigger Jaccard-compares it
-  // against the in-flight speculative run, rejects on the mismatch, bumps
-  // currentGenerationId — cancelling the correctly-prefetched answer — and then
-  // generates one for the PREVIOUS question.
-  // Auto Answer V3 (Settings > General, default OFF). AppState owns wiring and
-  // lifecycle only; the controller owns turn accumulation, endpoint reasoning,
-  // question identity, answerability, dedup, queueing, the dual-channel gate
-  // and every skip reason (electron/intelligence/autoAnswer/). With the toggle
-  // OFF `ingest` returns before touching any state — hotkey-only, as before.
-  /** Built before the controller (field order) so the controller can subscribe to it. */
-  private readonly smartTurnPredictor = createSmartTurnPredictor((line) => { if (this._verboseLogging) console.log(line); });
-  private readonly autoAnswerController = new AutoAnswerController({
-    isEnabled: () => this._autoAnswerEnabled,
-    isMeetingActive: () => this.isMeetingActive,
-    meetingGeneration: () => this._meetingGeneration,
-    engineAccepting: () => this.intelligenceManager.canAutoAnswer(),
-    manualAnswerActive: () => this.intelligenceManager.isManualAnswerActive(),
-    recentTurns: () => this.intelligenceManager.getLiveTranscriptBrain().getHotWindow(60) as any,
-    speculativeSnapshot: () => this.intelligenceManager.getSpeculativeSnapshot(),
-    noteCandidate: (id, gen) => this.intelligenceManager.noteAutoAnswerCandidate(id, gen),
-    cancelAutomaticAnswer: (reason) => this.intelligenceManager.cancelAutomaticAnswer(reason),
-    dispatch: (question, { reuseSpeculative }) => {
-      void this.intelligenceManager.runAutoAnswer(question, { reuseSpeculative }).catch((error) => {
-        console.warn('[Main] Automatic interviewer answer failed:', error);
-      });
-    },
-    // V3 Amendment 4: the ONE offer card, rendered through the existing Dynamic
-    // Action surface (DynamicActionBar/Card). Tab or click commits; the
-    // What-to-Answer hotkey commits through manual_answer_started → retract.
-    offer: (question) => this.showAutoAnswerOffer(question),
-    retractOffer: (questionId, reason) => this.retractAutoAnswerOffer(questionId, reason),
-    log: (line) => { if (this._verboseLogging) console.log(line); },
-    telemetry: (event) => {
-      // Structured, NO transcript text (V2 §29): ids, acts, scores, reasons, timings only.
-      try {
-        const { telemetryService } = require('./services/telemetry/TelemetryService');
-        const { name, meetingGeneration, provider, ...properties } = event;
-        telemetryService.track({ name, provider, properties: { meetingGeneration, ...properties } });
-      } catch { /* telemetry must never break the pipeline */ }
-    },
-  }, {
-    // Tier-2 endpoint evidence: Smart Turn v3.1 on the interviewer audio
-    // (V3 Amendment 2). Asset missing → predict() null → deterministic path.
-    turnPredictor: this.smartTurnPredictor,
-    // Layer-3 dedup / speculative reuse over the bundled local embedder
-    // (Xenova/all-MiniLM-L6-v2). Lazily constructed; any failure → null →
-    // the cheap layers decide (V2 §38: never depend on a model asset).
-    embed: async (text: string) => {
-      try {
-        let embedder = this.autoAnswerEmbedder;
-        if (!embedder) {
-          const { LocalEmbeddingProvider } = require('./rag/providers/LocalEmbeddingProvider');
-          embedder = new LocalEmbeddingProvider();
-          this.autoAnswerEmbedder = embedder;
-        }
-        return await embedder!.embed(text);
-      } catch { return null; }
-    },
-  });
-  private autoAnswerEmbedder: { embed(text: string): Promise<number[]> } | null = null;
-
-  /** A manual What-to-Answer started (hotkey / button / accepted offer): the offer card is committed. */
-  public onManualWhatToAnswer(): void {
-    this.autoAnswerController.onManualAnswerStarted();
-  }
-
-  /** Per-mode ternary thresholds (V3 Amendment 4), resolved from the mode policy registry. */
-  public applyAutoAnswerThresholds(modeTemplateType: string | null | undefined): void {
-    try {
-      const { resolveAutoAnswerThresholds } = require('./context-intelligence/policies/mode-policy-registry') as typeof import('./context-intelligence/policies/mode-policy-registry');
-      this.autoAnswerController.setThresholds(resolveAutoAnswerThresholds(modeTemplateType));
-    } catch { /* keep the current thresholds */ }
-  }
-
-  private cancelAutoAnswer(): void {
-    this.autoAnswerController.onMeetingStop();
-    // Free the Smart Turn ORT session between meetings (and on toggle-off).
-    // It is lazily re-created on the next interviewer speech-stop. Also keeps
-    // a live ORT session out of any hard-exit path: process.exit() with one
-    // loaded SIGABRTs (reproduced under Electron 43's Node).
-    void this.smartTurnPredictor.dispose();
-  }
-
-  /** Stable id prefix so the renderer can replace the card in place and retract it by id. */
-  private static readonly AUTO_ANSWER_OFFER_ID_PREFIX = 'auto-answer-offer:';
-
-  /** Render the offer as a Dynamic Action (reuse, not a new surface — V2 §47 / V3 Amendment 4). */
-  private showAutoAnswerOffer(question: { id: string; text: string; answerability: number; dialogueAct: string }): void {
-    const now = Date.now();
-    let modeId = 'general';
-    let modeTemplateType = 'general';
-    try {
-      const { ModesManager } = require('./services/ModesManager');
-      const active = ModesManager.getInstance().getActiveMode();
-      if (active) { modeId = active.id; modeTemplateType = active.templateType; }
-    } catch { /* defaults */ }
-    const action = {
-      id: `${AppState.AUTO_ANSWER_OFFER_ID_PREFIX}${question.id}`,
-      sessionId: `auto-answer-${this._meetingGeneration}`,
-      modeId,
-      modeTemplateType,
-      type: 'auto_answer_offer',
-      label: 'Answer this?',
-      // The detected question IS the card body; it is also the prompt the
-      // renderer hands to handleWhatToSay on accept (manual semantics).
-      description: question.text,
-      confidence: question.answerability,
-      priority: 100,
-      evidenceRefs: [],
-      status: 'shown' as const,
-      createdAt: now,
-      expiresAt: now + 10_000,
-      promptInstruction: question.text,
-    };
-    try { this.intelligenceManager.registerDynamicAction(action); } catch { /* accept still works renderer-side */ }
-    const helper = this.getWindowHelper();
-    this.sendToWindow(helper.getLauncherWindow(), 'intelligence-dynamic-action', { action });
-    this.sendToWindow(helper.getOverlayWindow(), 'intelligence-dynamic-action', { action });
-  }
-
-  private retractAutoAnswerOffer(questionId: string, reason: string): void {
-    const id = `${AppState.AUTO_ANSWER_OFFER_ID_PREFIX}${questionId}`;
-    try { this.intelligenceManager.dismissDynamicAction(id); } catch { /* best effort */ }
-    const helper = this.getWindowHelper();
-    this.sendToWindow(helper.getLauncherWindow(), 'intelligence-dynamic-action-retract', { id, reason });
-    this.sendToWindow(helper.getOverlayWindow(), 'intelligence-dynamic-action-retract', { id, reason });
-  }
-
-  /** before-quit: release the Smart Turn session before the process winds down. */
-  public disposeAutoAnswerForShutdown(): void {
-    void this.smartTurnPredictor.dispose();
-  }
-
   private createSTTProvider(speaker: 'interviewer' | 'user'): STTProvider | null {
     const { CredentialsManager } = require('./services/CredentialsManager');
     const sttProvider = CredentialsManager.getInstance().getSttProvider();
@@ -3356,7 +2482,7 @@ export class AppState {
         // multiple people may speak. The mic channel is always the local user ('me'), so
         // diarizing it adds cost with no benefit. Default OFF via flag.
         try {
-          if (speaker === 'interviewer' && isIntelligenceFlagEnabled('speakerDiarizationV1')) {
+          if (speaker === 'interviewer' && isDeepgramDiarizationEnabled()) {
             dg.setDiarization(true);
           }
         } catch { /* flag read non-fatal */ }
@@ -3470,17 +2596,6 @@ export class AppState {
       : stt instanceof GoogleSTT ? 'google'
       : sttProvider;
 
-    // Auto Answer V3 provider endpoints (Deepgram speech_final / UtteranceEnd,
-    // Soniox <end>, OpenAI server VAD). Interviewer channel only; additive
-    // event that only the controller consumes. Providers without the event
-    // simply never emit it — the quiet window remains the floor.
-    if (speaker === 'interviewer') {
-      (stt as any).on?.('endpoint', (ev: { type: 'speech_final' | 'utterance_end'; confidence?: number }) => {
-        if (!this._autoAnswerEnabled) return;
-        this.autoAnswerController.onProviderEndpoint({ type: ev.type, timestamp: Date.now(), confidence: ev.confidence });
-      });
-    }
-
     // Wire Transcript Events
     stt.on('transcript', (segment: { text: string, isFinal: boolean, confidence: number, speakerId?: string }) => {
       // Accept transcripts while a meeting is active OR while we're draining
@@ -3491,7 +2606,7 @@ export class AppState {
         return;
       }
 
-      this.intelligenceManager.handleTranscript({
+      this.meetingSessionManager.handleTranscript({
         speaker: speaker,
         ...(segment.speakerId ? { speakerId: segment.speakerId } : {}),
         text: segment.text,
@@ -3506,31 +2621,8 @@ export class AppState {
         // downstream question scoring can treat a missing '?' as NEUTRAL
         // when this provider never guaranteed punctuation.
         sttProvider: effectiveSttId,
-        punctuationSource: punctuationSourceFor(effectiveSttId, segment.isFinal),
+        punctuationSource: punctuationSourceForStt(effectiveSttId, segment.isFinal),
       });
-
-      // Auto Answer V3 (Settings > General, default OFF): every segment, any
-      // speaker, partial or final — the controller decides whether anything
-      // happens (V2 §24). Returns immediately when the toggle is off.
-      this.autoAnswerController.ingest({
-        speaker,
-        text: segment.text,
-        timestamp: Date.now(),
-        final: segment.isFinal,
-        confidence: segment.confidence,
-        origin: 'stt',
-        sttProvider: effectiveSttId,
-        punctuationSource: punctuationSourceFor(effectiveSttId, segment.isFinal),
-      });
-
-      // Feed final transcript to JIT RAG indexer
-      if (segment.isFinal && this.ragManager) {
-        this.ragManager.feedLiveTranscript([{
-          speaker: speaker,
-          text: segment.text,
-          timestamp: Date.now()
-        }]);
-      }
 
       const payload = {
         speaker: speaker,
@@ -3541,28 +2633,9 @@ export class AppState {
         confidence: segment.confidence
       };
       // Display-only send, partial-throttled (finals pass through immediately).
-      // The answer path above (handleTranscript / RAG feed) is unaffected.
+      // Raw transcript persistence above is unaffected.
       this.sendThrottledTranscript(payload);
 
-      // Feed final recruiter (system audio) transcripts to the premium
-      // negotiation tracker. Issue #272: gate by active mode template so the
-      // tracker never accumulates negotiation state in modes where salary is
-      // out of scope (technical-interview, team-meet, lecture). Output gating
-      // in LLMHelper is the primary defense; gating at the source stops state
-      // from carrying over to any future read site. Fails open if ModesManager
-      // is unavailable.
-      if (segment.isFinal && speaker === 'interviewer') {
-        let trackerFeedAllowed = true;
-        try {
-          const { ModesManager } = require('./services/ModesManager');
-          trackerFeedAllowed = ModesManager.getInstance().isPremiumKnowledgeInterceptAllowed();
-        } catch (_err) {
-          // fail open — preserve existing behaviour for modes that need the tracker
-        }
-        if (trackerFeedAllowed) {
-          this.knowledgeOrchestrator?.feedInterviewerUtterance?.(segment.text);
-        }
-      }
     });
 
     // Consecutive failure counter — reset on any successful final transcript
@@ -3908,7 +2981,6 @@ export class AppState {
         this.googleSTT?.write(chunk);
         // Smart Turn ring buffer (256 KB, interviewer channel only). Cheap
         // int16 copy; skipped entirely while Auto Answer is off.
-        if (this._autoAnswerEnabled) this.smartTurnPredictor.pushPcm(chunk, capture.getSampleRate?.() ?? 16000);
       }
     });
     capture.on('sample_rate_changed', (rate: number) => {
@@ -3923,7 +2995,6 @@ export class AppState {
       }
     });
     capture.on('speech_edge', (edge: SpeechEdge) => {
-      if (this.systemAudioCapture === capture) this.autoAnswerController.onSpeechEdge(edge);
     });
     // setupAudioRecoveryHandler registers its own 'error' listener — do not
     // add a duplicate logger here or the same error reports twice.
@@ -4114,7 +3185,6 @@ export class AppState {
       }
     });
     capture.on('speech_edge', (edge: SpeechEdge) => {
-      if (this.microphoneCapture === capture) this.autoAnswerController.onSpeechEdge(edge);
     });
     // setupMicRecoveryHandler registers its own 'error' listener.
     this.setupMicRecoveryHandler();
@@ -5941,7 +5011,6 @@ export class AppState {
 
   private async startMeetingTransition(metadata?: any): Promise<void> {
     console.log('[Main] Starting Meeting...', metadata);
-    this.autoAnswerController.onMeetingStart();
 
     // If a previous endMeeting() is still draining STT in the background, wait
     // for it to finish before we boot a new session — otherwise the BG teardown
@@ -5967,50 +5036,23 @@ export class AppState {
       this._systemAudioRecoveryTimer = null;
     }
 
-    // Ambient AI Chat (Settings > General) skips mic/system audio capture
-    // entirely for the whole meeting (see the `!this._ambientChatEnabled`
-    // gate around setupSystemAudioPipeline() below) — so neither permission
-    // is ever touched in that mode. Checking/warning about them here anyway
-    // used to throw on a denied mic grant (blocking "Start Natively" outright)
-    // and always surface the "Interviewer audio will not be captured" banner,
-    // even though no audio was ever going to be captured by design.
-    if (!this._ambientChatEnabled) {
-      if (!(await ensureMacMicrophoneAccess('meeting start'))) {
-        const message = formatPermissionMessage('mic-denied');
-        // Tag the thrown error so the renderer's start-meeting caller (still on
-        // the launcher — the overlay/meeting surface hasn't been shown yet, so
-        // the in-overlay audio banner would not be visible) can recognise this
-        // as a recoverable mic-permission denial and re-open the permissions
-        // card instead of failing silently with only a console.error. Pre-fix,
-        // a denied/revoked mic grant made "Start Natively" do nothing on screen.
-        const err = new Error(message) as Error & { code?: string; channel?: string };
-        err.code = 'mic-permission-denied';
-        err.channel = 'mic';
-        throw err;
-      }
+    if (!(await ensureMacMicrophoneAccess('meeting start'))) {
+      const message = formatPermissionMessage('mic-denied');
+      const err = new Error(message) as Error & { code?: string; channel?: string };
+      err.code = 'mic-permission-denied';
+      err.channel = 'mic';
+      throw err;
+    }
 
-      // Check Screen Recording permission required for system audio capture
-      // (CoreAudio Global Process Tap + ScreenCaptureKit both need this).
-      // NOTE: The 'not-determined' TCC dialog is triggered once at app startup
-      // (in initializeApp) so it never pops up mid-meeting here. We only act on
-      // explicit 'denied' — in that case warn the user but let the meeting continue
-      // with microphone-only transcription.
-      if (process.platform === 'darwin') {
-        const screenCapability = await resolveMacScreenCaptureCapability('meeting start');
-        console.log(`[Main] macOS screen recording permission status: ${screenCapability.status}; capturable=${screenCapability.capturable}; sources=${screenCapability.sourceCount}`);
-        if (screenCapability.effectiveDenied) {
-          // Permission was explicitly denied — warn the user via the UI but do NOT
-          // auto-open System Settings. Forcing that window open every meeting start
-          // is extremely disruptive, especially when mic transcription is still working.
-          // The UI will show a non-blocking banner; the user can fix it deliberately.
-          const message = screenCapability.message ?? formatPermissionMessage('screen-recording-denied');
-          console.warn('[Main]', message);
-          this.sendSystemAudioPermissionDenied(message, screenCapability.titleKey ?? permissionTitleKey('screen-recording-denied'));
-          // NOTE: Do NOT call shell.openExternal() here — it hijacks focus on every meeting
-          // start. The UI banner (system-audio-permission-denied IPC event) handles this.
-        }
-        // 'not-determined': Handled at startup. SCK/CoreAudio will trigger the TCC
-        // dialog itself when it first attempts to access screen content.
+    // Check Screen Recording permission required for macOS system audio capture.
+    // A denial is non-fatal because microphone transcription can still continue.
+    if (process.platform === 'darwin') {
+      const screenCapability = await resolveMacScreenCaptureCapability('meeting start');
+      console.log(`[Main] macOS screen recording permission status: ${screenCapability.status}; capturable=${screenCapability.capturable}; sources=${screenCapability.sourceCount}`);
+      if (screenCapability.effectiveDenied) {
+        const message = screenCapability.message ?? formatPermissionMessage('screen-recording-denied');
+        console.warn('[Main]', message);
+        this.sendSystemAudioPermissionDenied(message, screenCapability.titleKey ?? permissionTitleKey('screen-recording-denied'));
       }
     }
 
@@ -6032,62 +5074,20 @@ export class AppState {
     const meetingGeneration = ++this._meetingGeneration;
     this.isMeetingActive = true;
     this.broadcastMeetingState()
-    if (metadata) {
-      this.intelligenceManager.setMeetingMetadata(metadata);
-    }
-
-    // Phase 3 — bind dynamic action engine to this meeting + active mode.
-    // Action store is per-(sessionId, modeId), so a fresh sessionId here gives
-    // us per-meeting isolation. Re-binding on mode switch is handled in the
-    // modes:set-active IPC handler.
-    let _meetingTelemetrySessionId: string | undefined;
-    try {
-      const { ModesManager } = require('./services/ModesManager');
-      const activeMode = ModesManager.getInstance().getActiveMode();
-      if (activeMode) {
-        const sessionId = `session_${crypto.randomUUID()}`;
-        _meetingTelemetrySessionId = sessionId;
-        this.intelligenceManager.setDynamicActionContext({
-          sessionId,
-          modeId: activeMode.id,
-          modeTemplateType: activeMode.templateType,
-        });
-        this.applyAutoAnswerThresholds(activeMode.templateType);
-      }
-    } catch (err) {
-      // Auxiliary feature — never block meeting start.
-      console.warn('[Main] failed to bind dynamic action context at meeting start:', (err as Error)?.message);
-    }
+    this.meetingSessionManager.startMeeting(metadata);
 
     // Phase 6 — meeting_start telemetry (no transcript / no PII).
     try {
       const { telemetryService } = require('./services/telemetry/TelemetryService');
-      const { ModesManager } = require('./services/ModesManager');
-      const am = ModesManager.getInstance().getActiveMode();
       telemetryService.track({
         name: 'meeting_start',
-        sessionId: _meetingTelemetrySessionId,
-        modeId: am?.id,
-        properties: { modeTemplateType: am?.templateType, hasMetadata: Boolean(metadata) },
+        properties: { hasMetadata: Boolean(metadata) },
       });
     } catch { /* non-fatal */ }
 
     // Emit session reset to clear UI state immediately
     this.sendToWindow(this.getWindowHelper().getOverlayWindow(), 'session-reset');
     this.sendToWindow(this.getWindowHelper().getLauncherWindow(), 'session-reset');
-
-    // LOCAL-MODEL WARMUP: if the active model is a local Ollama model, warm + pin
-    // it now (fire-and-forget) so the cold weight-load (8-12s for a 7-9B model)
-    // happens DURING the meeting-start / audio-init window instead of on the user's
-    // first live question — where it would otherwise blow the first-token deadline
-    // and surface the canned fallback. Cloud models no-op here (prewarm returns
-    // fast for non-Ollama), so a cloud session pays nothing. Never blocks start.
-    try {
-      const llmHelper = this.processingHelper.getLLMHelper();
-      if (llmHelper?.isUsingOllama?.()) {
-        llmHelper.prewarmPromptCache().catch((_e: any): void => {});
-      }
-    } catch { /* non-fatal — warmup must never block meeting start */ }
 
     // ★ ASYNC AUDIO INIT: Return INSTANTLY so the IPC response goes back
     // to the renderer immediately, allowing the UI to switch to overlay
@@ -6102,10 +5102,8 @@ export class AppState {
       let microphoneCaptureOwnedByInit = this.microphoneCapture;
       let systemSttOwnedByInit = this.googleSTT;
       let userSttOwnedByInit = this.googleSTT_User;
-      let ragManagerOwnedByInit = this.ragManager;
       let systemSttStartedByInit = false;
       let userSttStartedByInit = false;
-      let liveIndexingStartedByInit = false;
       const abortStaleAudioInit = () => {
         if (this.systemAudioCapture === systemCaptureOwnedByInit) {
           (this.systemAudioCapture as any)?.__disarmStuckWatchdog?.();
@@ -6123,9 +5121,6 @@ export class AppState {
         if (userSttStartedByInit) {
           if (this.googleSTT_User === userSttOwnedByInit) this.googleSTT_User?.stop();
         }
-        if (liveIndexingStartedByInit) {
-          if (this.ragManager === ragManagerOwnedByInit) this.ragManager?.stopLiveIndexing?.();
-        }
       };
 
       if (!isCurrentMeeting()) {
@@ -6133,40 +5128,9 @@ export class AppState {
         return;
       }
       try {
-        // Ambient AI Chat (Settings > General): audio capture is the ONLY
-        // thing this setting changes. Everything else about a meeting —
-        // window, persistence, RAG, quick actions — proceeds identically;
-        // skipping reconfigureAudio()/setupSystemAudioPipeline() here just
-        // means systemAudioCapture/microphoneCapture/googleSTT/googleSTT_User
-        // stay whatever they already were (null on a clean boot or after a
-        // prior meeting's teardown), so the start() calls below are already
-        // safe no-ops via `?.` — no other code path needs to know about this.
-        if (this._ambientChatEnabled) {
-          // Loud, unambiguous marker. On 2026-07-30 this flag flipped on and
-          // every meeting for the next five hours persisted with an empty
-          // transcript and a skeleton summary — 15 meetings of silent data
-          // loss that read as "meeting notes are broken". If capture is
-          // intentionally off, the log should say so at the exact moment a
-          // meeting starts without it.
-          console.warn('[Main] Meeting starting WITHOUT audio capture — Ambient AI Chat is ON (Settings > General). Transcript, summary and usage will be empty for this meeting.');
-        }
-        if (!this._ambientChatEnabled) {
-          // Check for audio configuration preference
-          if (metadata?.audio) {
-            await this.reconfigureAudio(metadata.audio.inputDeviceId, metadata.audio.outputDeviceId);
-            if (!isCurrentMeeting()) {
-              abortStaleAudioInit();
-              return;
-            }
-            systemCaptureOwnedByInit = this.systemAudioCapture;
-            microphoneCaptureOwnedByInit = this.microphoneCapture;
-            systemSttOwnedByInit = this.googleSTT;
-            userSttOwnedByInit = this.googleSTT_User;
-            ragManagerOwnedByInit = this.ragManager;
-          }
-
-          // LAZY INIT: Ensure pipeline is ready (if not reconfigured above)
-          await this.setupSystemAudioPipeline();
+        // Check for audio configuration preference
+        if (metadata?.audio) {
+          await this.reconfigureAudio(metadata.audio.inputDeviceId, metadata.audio.outputDeviceId);
           if (!isCurrentMeeting()) {
             abortStaleAudioInit();
             return;
@@ -6175,23 +5139,23 @@ export class AppState {
           microphoneCaptureOwnedByInit = this.microphoneCapture;
           systemSttOwnedByInit = this.googleSTT;
           userSttOwnedByInit = this.googleSTT_User;
-          ragManagerOwnedByInit = this.ragManager;
-
-          // Per-channel isolated start (F-105) — mic first for the HAL
-          // ordering invariant; a mic failure no longer prevents the system
-          // channel, live indexing, or the route watcher from starting.
-          const channelsStarted = this.startCaptureChannels('startMeeting');
-          userSttStartedByInit = channelsStarted.mic;
-          systemSttStartedByInit = channelsStarted.system;
-        } else {
-          console.log('[Main] Ambient AI Chat enabled — skipping mic/system audio capture and STT for this session.');
         }
 
-        // Start JIT RAG live indexing
-        if (this.ragManager) {
-          this.ragManager.startLiveIndexing('live-meeting-current');
-          liveIndexingStartedByInit = true;
+        // LAZY INIT: Ensure pipeline is ready (if not reconfigured above)
+        await this.setupSystemAudioPipeline();
+        if (!isCurrentMeeting()) {
+          abortStaleAudioInit();
+          return;
         }
+        systemCaptureOwnedByInit = this.systemAudioCapture;
+        microphoneCaptureOwnedByInit = this.microphoneCapture;
+        systemSttOwnedByInit = this.googleSTT;
+        userSttOwnedByInit = this.googleSTT_User;
+
+        // Per-channel isolated start — mic first for the HAL ordering invariant.
+        const channelsStarted = this.startCaptureChannels('startMeeting');
+        userSttStartedByInit = channelsStarted.mic;
+        systemSttStartedByInit = channelsStarted.system;
 
         if (!isCurrentMeeting()) {
           abortStaleAudioInit();
@@ -6259,7 +5223,6 @@ export class AppState {
       return;
     }
 
-    this.cancelAutoAnswer();
     // Cover the window between here and `_pendingTeardown` assignment, during which
     // the new in-flight-audio-init await below yields the event loop.
     this._endMeetingInFlight = true;
@@ -6269,13 +5232,7 @@ export class AppState {
     // in stop logic still records the stop event.
     try {
       const { telemetryService } = require('./services/telemetry/TelemetryService');
-      const { ModesManager } = require('./services/ModesManager');
-      const am = ModesManager.getInstance().getActiveMode();
-      telemetryService.track({
-        name: 'meeting_stop',
-        modeId: am?.id,
-        properties: { modeTemplateType: am?.templateType },
-      });
+      telemetryService.track({ name: 'meeting_stop' });
     } catch { /* non-fatal */ }
 
     // Reset Mouse Passthrough so the next meeting overlay starts fresh and focusable
@@ -6402,7 +5359,7 @@ export class AppState {
     this.googleSTT?.finalize?.();
     this.googleSTT_User?.finalize?.();
 
-    // ─── BACKGROUND: STT drain + meeting save + RAG embed ────────────────
+    // ─── BACKGROUND: STT drain + raw meeting save ─────────────────────────
     // Note: `isMeetingActive` was already flipped to false synchronously above
     // (so the launcher UI updates instantly). `_isDraining` is true during the
     // 250 ms grace window so the transcript handler keeps accepting trailing
@@ -6410,10 +5367,9 @@ export class AppState {
     // in-flight teardown as `_pendingTeardown` so a fast start→stop→start
     // sequence awaits this completion in startMeeting() before booting a new
     // session on the (still-shared) STT instances.
-    const ragManager = this.ragManager;
     this._pendingTeardown = (async () => {
       // CRITICAL ORDERING: await the native capture teardown FIRST, before any
-      // of the STT/RAG drain below. startMeeting() awaits this whole
+      // of the STT drain below. startMeeting() awaits this whole
       // _pendingTeardown promise before it constructs/starts a new capture, so
       // resolving captureTeardownPromise inside it guarantees the previous
       // meeting's `monitor.stop()` has released the CoreAudio device before the
@@ -6422,26 +5378,7 @@ export class AppState {
       // the next start rather than racing it.
       await captureTeardownPromise;
       try {
-        // 0. Revert to Default Model. Moved into BG: getDefaultModel() and the
-        //    provider list reads touch disk, and the 'model-changed' broadcast
-        //    re-renders all open windows — both block the main thread/renderer
-        //    during the Stop-click critical path. Doing it here means the
-        //    revert lands ~250 ms after Stop, by which point the launcher is
-        //    already painted and the overlay is hidden, so the user never
-        //    sees a stutter.
-        try {
-          const { CredentialsManager } = require('./services/CredentialsManager');
-          const cm = CredentialsManager.getInstance();
-          const defaultModel = cm.getDefaultModel();
-          const all = [...(cm.getCurlProviders() || []), ...(cm.getCustomProviders() || [])];
-          console.log(`[Main] Reverting model to default: ${defaultModel}`);
-          this.processingHelper.getLLMHelper().setModel(defaultModel, all);
-          this.sendModelChanged(defaultModel);
-        } catch (e) {
-          console.error('[Main] Failed to revert model:', e);
-        }
-
-        // 1. Grace window for STT trailing finals (Google/Soniox/Deepgram all
+        // Grace window for STT trailing finals (Google/Soniox/Deepgram all
         //    reply to finalize() within 100–200ms). 250ms is conservative.
         await new Promise(resolve => setTimeout(resolve, 250));
 
@@ -6449,38 +5386,9 @@ export class AppState {
         this.googleSTT?.stop();
         this.googleSTT_User?.stop();
 
-        // 3. Snapshot transcript + persist placeholder + queue title/summary LLM.
-        //    intelligenceManager.stopMeeting itself runs LLM in background.
-        const stopResult = await this.intelligenceManager.stopMeeting();
-        const meetingId = stopResult?.meetingId ?? null;
-
-        // 5. RAG cleanup — same logic as before, just inside the BG IIFE.
-        if (meetingId) {
-          if (ragManager) {
-            await ragManager.stopLiveIndexing();
-            console.log('[Main] Live RAG indexing stopped.');
-          }
-          // Zero-eligible sessions (manual chat only — deep-run 2 issue 11)
-          // skip RAG entirely: the transcript re-read below has no provenance
-          // columns, so chat/assistant text would be chunked and embedded as
-          // meeting content.
-          if ((stopResult?.memoryEligibleCount ?? 1) > 0) {
-            await this.processCompletedMeetingForRAG(meetingId);
-          } else {
-            console.log('[Main] No memory-eligible transcript — skipping meeting RAG processing.');
-          }
-          if (ragManager && !this.isMeetingActive) {
-            ragManager.deleteMeetingData('live-meeting-current');
-            console.log('[Main] JIT RAG provisional chunks cleaned up.');
-          } else if (this.isMeetingActive) {
-            console.log('[Main] New meeting started during cleanup — skipping live-meeting-current deletion.');
-          }
-        } else {
-          if (ragManager) {
-            await ragManager.stopLiveIndexing().catch((): void => {});
-            if (!this.isMeetingActive) ragManager.deleteMeetingData('live-meeting-current');
-          }
-        }
+        // Persist the raw final transcript. No title, summary, memory, RAG, or
+        // profile processing runs on this path.
+        await this.meetingSessionManager.stopMeeting();
       } catch (err) {
         console.error('[Main] Background meeting teardown failed:', err);
       } finally {
@@ -6492,297 +5400,6 @@ export class AppState {
     // "Stop" button transitions instantly. Total endMeeting wall-clock time
     // is now bounded by the synchronous block above (~1–5ms typical).
   }
-
-  private async processCompletedMeetingForRAG(meetingId: string): Promise<void> {
-    if (!this.ragManager) return;
-
-    // In-flight guard: rapid teardown paths (recovery retry + normal completion,
-    // or back-to-back endMeeting calls) can enqueue the same meeting twice
-    // before the first completes. Each invocation re-reads the transcript,
-    // re-chunks, and re-queues embeddings — duplicating ~100ms-2s of work and
-    // racing the SQLite INSERT-OR-IGNORE. Short-circuit if already in flight.
-    if (this._ragProcessingInFlight.has(meetingId)) {
-      console.log(`[AppState] RAG processing for ${meetingId} already in flight — skipping duplicate.`);
-      return;
-    }
-    this._ragProcessingInFlight.add(meetingId);
-
-    try {
-      // Use the explicit meetingId passed from endMeeting() — deterministic, never
-      // picks up a concurrently started meeting the way getRecentMeetings(1) could.
-      const meeting = DatabaseManager.getInstance().getMeetingDetails(meetingId);
-      if (!meeting || !meeting.transcript || meeting.transcript.length === 0) return;
-
-      // Convert transcript to RAG format
-      const segments = meeting.transcript.map(t => ({
-        speaker: t.speaker,
-        text: t.text,
-        timestamp: t.timestamp
-      }));
-
-      // Generate summary from detailedSummary if available
-      let summary: string | undefined;
-      if (meeting.detailedSummary) {
-        summary = [
-          ...(meeting.detailedSummary.keyPoints || []),
-          ...(meeting.detailedSummary.actionItems || []).map(a => `Action: ${a}`)
-        ].join('. ');
-      }
-
-      const result = await this.ragManager.processMeeting(meeting.id, segments, summary);
-      console.log(`[AppState] RAG processed meeting ${meeting.id}: ${result.chunkCount} chunks`);
-
-    } catch (error) {
-      console.error('[AppState] Failed to process meeting for RAG:', error);
-    } finally {
-      this._ragProcessingInFlight.delete(meetingId);
-    }
-  }
-
-  private setupIntelligenceEvents(): void {
-    const mainWindow = this.getMainWindow.bind(this)
-
-    // Sprint 9: time-batched IPC token sends.
-    //
-    // Each LLM streaming token previously fired one webContents.send → one
-    // structured-clone serialization → one IPC message. For a 400-token
-    // answer at 100 tok/s that's 400 IPC messages over 4 seconds. With
-    // Groq at 200+ tok/s the rate gets uncomfortable.
-    //
-    // Coalesce per-tick: a token arriving in the current libuv iteration
-    // adds to a per-kind buffer. The first add schedules a setImmediate
-    // flush that drains all buffers in one webContents.send per kind
-    // (carrying an items array). Net: ~3-5× fewer IPC messages on hot
-    // streams with no perceptible latency cost (sub-frame).
-    //
-    // The old per-token channels (intelligence-suggested-answer-token, etc.)
-    // are NO LONGER USED for these 5 streams. The single
-    // 'intelligence-token-batch' channel replaces them. The old channel
-    // names + preload bridges are kept (defense-in-depth, no callers).
-    type BatchKind = 'suggested_answer' | 'refined_answer' | 'recap' | 'clarify' | 'follow_up_questions';
-    const tokenBatches = new Map<BatchKind, any[]>();
-    let batchFlushScheduled = false;
-    // The queued flush must be CANCELLABLE, and a manual flush must re-open the
-    // gate. Without the handle, a token that arrives between a final-answer
-    // handler's flushBatchesNow() and its own send is swallowed by the stale
-    // immediate: queueBatch calls scheduleBatchFlush, which early-returns
-    // because batchFlushScheduled is still true, and the already-queued
-    // immediate then delivers that token AFTER the final answer. That is exactly
-    // the "(…, final answer, trailing tokens)" ordering the comment below this
-    // block says must never reach the renderer — it clobbers the just-finalized
-    // bubble.
-    let pendingFlushHandle: NodeJS.Immediate | null = null;
-    const flushBatchesNow = () => {
-      if (pendingFlushHandle) {
-        clearImmediate(pendingFlushHandle);
-        pendingFlushHandle = null;
-      }
-      // Reset here, not only in the immediate's callback: a manual flush has
-      // done the work the queued one was going to do, so the next queueBatch
-      // must be able to arm a fresh immediate rather than be dropped.
-      batchFlushScheduled = false;
-      const win = mainWindow();
-      if (!win) { tokenBatches.clear(); return; }
-      for (const [kind, items] of tokenBatches.entries()) {
-        if (items.length > 0) {
-          this.sendToWindow(win, 'intelligence-token-batch', { kind, items });
-        }
-      }
-      tokenBatches.clear();
-    };
-    const scheduleBatchFlush = () => {
-      if (batchFlushScheduled) return;
-      batchFlushScheduled = true;
-      pendingFlushHandle = setImmediate(() => {
-        pendingFlushHandle = null;
-        batchFlushScheduled = false;
-        flushBatchesNow();
-      });
-    };
-    const queueBatch = (kind: BatchKind, item: any) => {
-      let arr = tokenBatches.get(kind);
-      if (!arr) { arr = []; tokenBatches.set(kind, arr); }
-      arr.push(item);
-      scheduleBatchFlush();
-    };
-    // ORDER: every final-answer handler must call this BEFORE its own send so
-    // the renderer sees (..., last tokens, final answer) and not (..., final
-    // answer, trailing tokens) — the latter would clobber the just-finalized
-    // row with appended text from a pending setImmediate batch.
-    const flushBatchesBeforeFinal = flushBatchesNow;
-
-    // Forward intelligence events to renderer
-    this.intelligenceManager.on('assist_update', (insight: string) => {
-      // Send to both if both exist, though mostly overlay needs it
-      const helper = this.getWindowHelper();
-      this.sendToWindow(helper.getLauncherWindow(), 'intelligence-assist-update', { insight });
-      this.sendToWindow(helper.getOverlayWindow(), 'intelligence-assist-update', { insight });
-    })
-
-    // Phase 3 — Cluely-style dynamic action card. Forward to all open windows
-    // (launcher + overlay) so whichever surface the user has up shows the card.
-    this.intelligenceManager.on('dynamic_action_emitted', (action: any) => {
-      const helper = this.getWindowHelper();
-      this.sendToWindow(helper.getLauncherWindow(), 'intelligence-dynamic-action', { action });
-      this.sendToWindow(helper.getOverlayWindow(), 'intelligence-dynamic-action', { action });
-      // Phase 6 — telemetry: log detection (sanitized: NO transcript text, NO
-      // evidence body — only ids, type, mode, confidence). The TelemetryService
-      // sanitizer also strips transcript-shaped fields defensively.
-      try {
-        const { telemetryService } = require('./services/telemetry/TelemetryService');
-        telemetryService.track({
-          name: 'dynamic_action_detected',
-          sessionId: action?.sessionId,
-          modeId: action?.modeId,
-          properties: {
-            actionId: action?.id,
-            actionType: action?.type,
-            modeTemplateType: action?.modeTemplateType,
-            confidence: action?.confidence,
-            priority: action?.priority,
-          },
-        });
-      } catch { /* non-fatal */ }
-    })
-
-    this.intelligenceManager.on('suggested_answer', (answer: string, question: string, confidence: number, generationId?: number, sourceLabel?: string) => {
-      // Phase 4 defense-in-depth (forensic-report §6b): forward the optional
-      // generationId the engine emits. Id-less emits (legacy answerLLM path,
-      // code-hint, brainstorm) continue to ship without it — the renderer
-      // treats them as always-accepted, same as id-less token batches today.
-      // Campaign-3 (fix/answer-policy-engine, 2026-07-19, founder §2.6):
-      // forward the optional sourceLabel the engine computes from the
-      // TurnPlan. Falls back to 'General knowledge' for legacy emitters
-      // (fallback paths, code-hint, brainstorm) that don't compute it.
-      flushBatchesBeforeFinal();
-      const win = mainWindow()
-      // emittedAt (2026-07-31): WTA supersession is generation-relative only —
-      // a slow generation stays "current" through any number of manual turns
-      // and mode switches, so a minutes-old answer appeared with no marker of
-      // what it answered (the live "late CGPA answer" report). The renderer
-      // uses this stamp to drop or visibly label stale finals.
-      this.sendToWindow(win, 'intelligence-suggested-answer', { answer, question, confidence, generationId, sourceLabel: sourceLabel ?? 'General knowledge', emittedAt: Date.now() })
-
-    })
-
-    this.intelligenceManager.on('suggested_answer_token', (token: string, question: string, confidence: number, generationId?: number) => {
-      // Sprint 9: batch instead of per-token webContents.send.
-      // generationId (audit finding #3): carried per-item so the renderer can
-      // drop a batch belonging to a superseded live answer. Undefined for the
-      // other live streams (code hint / brainstorm) — id-less items are accepted.
-      queueBatch('suggested_answer', { token, question, confidence, generationId });
-    })
-
-    // Orphaned-scaffold fix: a what-to-answer stream that already showed a
-    // coding scaffold ended with no final answer (superseded/declined/errored).
-    // Tell the renderer to drop the open scaffold row. Flush pending token
-    // batches first so a late scaffold batch can't re-mount the row afterwards.
-    this.intelligenceManager.on('suggested_answer_discard', (reason: string) => {
-      flushBatchesBeforeFinal();
-      const win = mainWindow()
-      this.sendToWindow(win, 'intelligence-suggested-answer-discard', { reason })
-    })
-
-    // Verified code execution (background): a ✓ badge when the shown code passed
-    // its executed test cases, and a NEW corrected message when it failed and a
-    // re-verified fix was produced. Both arrive AFTER the answer was shown.
-    this.intelligenceManager.on('code_verified', (info: { question: string; passed: number; total: number; language: string }) => {
-      const win = mainWindow()
-      this.sendToWindow(win, 'intelligence-code-verified', info)
-    })
-    this.intelligenceManager.on('code_correction', (info: { question: string; answer: string; note: string; reVerified: boolean }) => {
-      flushBatchesBeforeFinal();
-      const win = mainWindow()
-      this.sendToWindow(win, 'intelligence-code-correction', info)
-    })
-
-    // Sprint 7: dedicated negotiation-coaching channel. Engine emits this
-    // INSTEAD of suggested_answer / suggested_answer_token when it detects
-    // the coaching sentinel, so the renderer no longer needs JSON.parse-
-    // every-token detection.
-    this.intelligenceManager.on('negotiation_coaching', (payload: unknown) => {
-      // Sprint 9: flush any pending batched tokens first so the renderer
-      // sees them before the coaching card swap.
-      flushBatchesBeforeFinal();
-      const win = mainWindow()
-      this.sendToWindow(win, 'intelligence-negotiation-coaching', { payload })
-    })
-
-    this.intelligenceManager.on('refined_answer_token', (token: string, intent: string) => {
-      // Sprint 9: batch.
-      queueBatch('refined_answer', { token, intent });
-    })
-
-    this.intelligenceManager.on('refined_answer', (answer: string, intent: string) => {
-      flushBatchesBeforeFinal();
-      const win = mainWindow()
-      this.sendToWindow(win, 'intelligence-refined-answer', { answer, intent })
-
-    })
-
-    this.intelligenceManager.on('recap', (summary: string) => {
-      flushBatchesBeforeFinal();
-      const win = mainWindow()
-      this.sendToWindow(win, 'intelligence-recap', { summary })
-    })
-
-    this.intelligenceManager.on('recap_token', (token: string) => {
-      // Sprint 9: batch.
-      queueBatch('recap', { token });
-    })
-
-    this.intelligenceManager.on('clarify', (clarification: string) => {
-      flushBatchesBeforeFinal();
-      const win = mainWindow()
-      this.sendToWindow(win, 'intelligence-clarify', { clarification })
-    })
-
-    this.intelligenceManager.on('clarify_token', (token: string) => {
-      // Sprint 9: batch.
-      queueBatch('clarify', { token });
-    })
-
-    this.intelligenceManager.on('follow_up_questions_update', (questions: string) => {
-      flushBatchesBeforeFinal();
-      const win = mainWindow()
-      this.sendToWindow(win, 'intelligence-follow-up-questions-update', { questions })
-    })
-
-    this.intelligenceManager.on('follow_up_questions_token', (token: string) => {
-      // Sprint 9: batch.
-      queueBatch('follow_up_questions', { token });
-    })
-
-    this.intelligenceManager.on('manual_answer_started', () => {
-      // The hotkey/click commits whatever Auto Answer was offering.
-      this.autoAnswerController.onManualAnswerStarted();
-      const win = mainWindow()
-      this.sendToWindow(win, 'intelligence-manual-started')
-    })
-
-    this.intelligenceManager.on('manual_answer_result', (answer: string, question: string) => {
-      const win = mainWindow()
-      this.sendToWindow(win, 'intelligence-manual-result', { answer, question })
-
-    })
-
-    this.intelligenceManager.on('mode_changed', (mode: string) => {
-      const win = mainWindow()
-      this.sendToWindow(win, 'intelligence-mode-changed', { mode })
-      // A candidate parked because the engine was busy may now dispatch.
-      if (mode === 'idle') this.autoAnswerController.onEngineIdle()
-    })
-
-    this.intelligenceManager.on('error', (error: Error, mode: string) => {
-      console.error(`[IntelligenceManager] Error in ${mode}:`, error)
-      const win = mainWindow()
-      this.sendToWindow(win, 'intelligence-error', { error: error.message, mode })
-    })
-  }
-
-
-
-
 
   /**
    * Adopt a Google service-account key file for Speech-to-Text.
@@ -6835,7 +5452,6 @@ export class AppState {
 
     this.googleSTT?.setRecognitionLanguage(effectiveKey);
     this.googleSTT_User?.setRecognitionLanguage(effectiveKey);
-    this.processingHelper.getLLMHelper().setSttLanguage(effectiveKey);
   }
 
   public static getInstance(): AppState {
@@ -6860,34 +5476,16 @@ export class AppState {
     return notice;
   }
 
-  public setOnnxRecoveryNotice(family: OnnxRecoveryFamily, notice: OnnxRecoveryNotice): void {
-    this.onnxRecoveryNotices[family] = notice;
-  }
-
-  public takeOnnxRecoveryNotice(family: OnnxRecoveryFamily): OnnxRecoveryNotice | null {
-    const notice = this.onnxRecoveryNotices[family];
-    if (notice) delete this.onnxRecoveryNotices[family];
-    return notice ?? null;
-  }
-
   public getWindowHelper(): WindowHelper {
     return this.windowHelper
   }
 
-  public getIntelligenceManager(): IntelligenceManager {
-    return this.intelligenceManager
+  public getMeetingSessionManager(): MeetingSessionManager {
+    return this.meetingSessionManager
   }
 
   public getThemeManager(): ThemeManager {
     return this.themeManager
-  }
-
-  public getRAGManager(): RAGManager | null {
-    return this.ragManager;
-  }
-
-  public getKnowledgeOrchestrator(): any {
-    return this.knowledgeOrchestrator;
   }
 
   public getView(): "queue" | "solutions" {
@@ -6907,45 +5505,12 @@ export class AppState {
     return this.screenshotHelper
   }
 
-  public getProblemInfo(): any {
-    return this.problemInfo
-  }
-
-  public setProblemInfo(problemInfo: any): void {
-    this.problemInfo = problemInfo
-  }
-
   public getScreenshotQueue(): string[] {
     return this.screenshotHelper.getScreenshotQueue()
   }
 
   public getExtraScreenshotQueue(): string[] {
     return this.screenshotHelper.getExtraScreenshotQueue()
-  }
-
-  // Window management methods
-  public setupOllamaIpcHandlers(): void {
-    ipcMain.handle('get-ollama-models', async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2000); // 2s timeout for detection
-
-        const response = await fetch('http://localhost:11434/api/tags', {
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-
-        if (response.ok) {
-          const data = await response.json();
-          // data.models is an array of objects: { name: "llama3:latest", ... }
-          return data.models.map((m: any) => m.name);
-        }
-        return [];
-      } catch (error) {
-        // console.warn("Ollama detection failed:", error);
-        return [];
-      }
-    });
   }
 
   public createWindow(): void {
@@ -6988,11 +5553,6 @@ export class AppState {
 
   public clearQueues(): void {
     this.screenshotHelper.clearQueues()
-
-    // Clear problem info
-    this.problemInfo = null
-
-    // Reset view to initial state
     this.setView("queue")
   }
 
@@ -7001,14 +5561,15 @@ export class AppState {
     restoreFocus: boolean
   ): ScreenshotCaptureSession {
     const settingsWindow = this.settingsWindowHelper.getSettingsWindow();
-    const modelSelectorWindow = this.modelSelectorWindowHelper.getWindow();
+    const chatGptWebWindow = this.chatGptWebWindowHelper.getWindow();
 
     return {
       captureKind,
       wasMainWindowVisible: this.windowHelper.isVisible(),
       windowMode: this.windowHelper.getCurrentWindowMode(),
       wasSettingsVisible: !!settingsWindow && !settingsWindow.isDestroyed() && settingsWindow.isVisible(),
-      wasModelSelectorVisible: !!modelSelectorWindow && !modelSelectorWindow.isDestroyed() && modelSelectorWindow.isVisible(),
+      wasChatGptWebVisible: !!chatGptWebWindow && !chatGptWebWindow.isDestroyed() && chatGptWebWindow.isVisible(),
+      wasChatGptWebFocused: !!chatGptWebWindow && !chatGptWebWindow.isDestroyed() && chatGptWebWindow.isFocused(),
       overlayBounds: this.windowHelper.getLastOverlayBounds(),
       overlayDisplayId: this.windowHelper.getLastOverlayDisplayId(),
       restoreWithoutFocus: process.platform === 'darwin' || !restoreFocus
@@ -7034,8 +5595,8 @@ export class AppState {
   }
 
   private hideWindowsForScreenshot(session: ScreenshotCaptureSession): void {
-    if (session.wasModelSelectorVisible) {
-      this.modelSelectorWindowHelper.hideWindow();
+    if (session.wasChatGptWebVisible) {
+      this.chatGptWebWindowHelper.getWindow()?.hide();
     }
 
     if (session.wasSettingsVisible) {
@@ -7067,12 +5628,10 @@ export class AppState {
       }
     }
 
-    if (session.wasModelSelectorVisible) {
-      const modelSelectorWindow = this.modelSelectorWindowHelper.getWindow();
-      if (modelSelectorWindow && !modelSelectorWindow.isDestroyed()) {
-        const { x, y } = modelSelectorWindow.getBounds();
-        this.modelSelectorWindowHelper.showWindow(x, y, { activate });
-      }
+    if (session.wasChatGptWebVisible) {
+      void this.chatGptWebWindowHelper.showWindow({
+        activate: session.wasChatGptWebFocused,
+      });
     }
   }
 
@@ -7117,29 +5676,6 @@ export class AppState {
     return this.withScreenshotCaptureSession('full', restoreFocus, (session) =>
       this.screenshotHelper.takeScreenshot(this.getTargetDisplayForFullScreenshot(session))
     )
-  }
-
-  /**
-   * Capture the current screen and immediately request AI analysis (the
-   * "capture-and-process" single-trigger). Extracted so both the
-   * `general:capture-and-process` hotkey and the `general:capture-dom`
-   * screenshot fallback share one path.
-   */
-  private async captureScreenAndProcess(): Promise<void> {
-    const screenshotPath = await this.takeScreenshot(false);
-    const preview = await this.getImagePreview(screenshotPath);
-    // Ensure the window is visible so the user can see the response without stealing focus
-    this.showMainWindow(true);
-    // win.focus() can cause macOS to re-activate the app. Re-hide the dock
-    // if we are in undetectable mode.
-    if (process.platform === 'darwin' && this.isUndetectable) {
-      if (app.dock) app.dock.hide();  // app.dock is macOS-only (undefined elsewhere); darwin+isUndetectable gated at 6599
-    }
-    const mainWindow = this.getMainWindow();
-    this.sendToWindow(mainWindow, 'capture-and-process', {
-      path: screenshotPath,
-      preview,
-    });
   }
 
   public async takeSelectiveScreenshot(restoreFocus: boolean = true): Promise<string> {
@@ -7323,14 +5859,6 @@ export class AppState {
     }
   }
 
-  public setHasDebugged(value: boolean): void {
-    this.hasDebugged = value
-  }
-
-  public getHasDebugged(): boolean {
-    return this.hasDebugged
-  }
-
   public setUndetectable(state: boolean): void {
     const decision = decideToggle(this.isUndetectable, state);
 
@@ -7351,13 +5879,12 @@ export class AppState {
     this.isUndetectable = state
     this.windowHelper.setContentProtection(state)
     this.settingsWindowHelper.setContentProtection(state)
-    this.modelSelectorWindowHelper.setContentProtection(state)
     this.cropperWindowHelper.setContentProtection(state)
+    this.chatGptWebWindowHelper.setContentProtection(state)
 
     if (process.platform === 'win32') {
       this.windowHelper.syncOverlayInteractionPolicy();
       this.settingsWindowHelper.syncActivationPolicy();
-      this.modelSelectorWindowHelper.syncActivationPolicy();
       // The tray must follow undetectable state on Windows too. On macOS the
       // _enforceDockState loop hides the tray alongside the dock and restores
       // both on the way out — but that loop returns immediately off darwin, and
@@ -7428,14 +5955,8 @@ export class AppState {
         if (settingsWindow && !settingsWindow.isDestroyed() && settingsWindow.isVisible()) {
           targetFocusWindow = settingsWindow;
         }
-        const modelSelectorWindow = this.modelSelectorWindowHelper.getWindow();
-        const isModelSelectorVisible = modelSelectorWindow && !modelSelectorWindow.isDestroyed() && modelSelectorWindow.isVisible();
-
         if (targetFocusWindow && targetFocusWindow === settingsWindow) {
           this.settingsWindowHelper.setIgnoreBlur(true);
-        }
-        if (isModelSelectorVisible) {
-          /* this.modelSelectorWindowHelper.setIgnoreBlur(true); */
         }
 
         // Drive the dock/tray to the settled state via a SELF-VERIFYING loop.
@@ -7448,9 +5969,6 @@ export class AppState {
 
         if (targetFocusWindow && targetFocusWindow === settingsWindow) {
           setTimeout(() => { this.settingsWindowHelper.setIgnoreBlur(false); }, 500);
-        }
-        if (isModelSelectorVisible) {
-          setTimeout(() => { /* this.modelSelectorWindowHelper.setIgnoreBlur(false); */ }, 500);
         }
       }, 350);
     }
@@ -7527,8 +6045,8 @@ export class AppState {
   private reassertAllContentProtection(): void {
     this.windowHelper.reassertContentProtection();
     this.settingsWindowHelper.reassertContentProtection();
-    this.modelSelectorWindowHelper.reassertContentProtection();
     this.cropperWindowHelper.reassertContentProtection();
+    this.chatGptWebWindowHelper.reassertContentProtection();
   }
 
   public getUndetectable(): boolean {
@@ -7639,6 +6157,10 @@ export class AppState {
     return this._verboseLogging;
   }
 
+  public getLogFilePath(): string {
+    return getLogFile() ?? path.join(os.tmpdir(), 'natively_debug.log');
+  }
+
   public setVerboseLogging(enabled: boolean): void {
     this._verboseLogging = enabled;
     setVerboseLoggingFlag(enabled);
@@ -7646,39 +6168,6 @@ export class AppState {
     console.log(`[AppState] verboseLogging set to ${enabled}`);
     // Notify all renderer windows so they can start/stop forwarding their console output
     this.broadcast('verbose-logging-changed', enabled);
-  }
-
-  public getAmbientChatEnabled(): boolean {
-    return this._ambientChatEnabled;
-  }
-
-  public setAmbientChatEnabled(enabled: boolean): void {
-    this._ambientChatEnabled = enabled;
-    SettingsManager.getInstance().set('ambientChatEnabled', enabled);
-    console.log(`[AppState] ambientChatEnabled set to ${enabled}`);
-  }
-
-  public getAutoAnswerEnabled(): boolean {
-    return this._autoAnswerEnabled;
-  }
-
-  /**
-   * Returns whether the value was PERSISTED. SettingsManager.set refuses when
-   * the store is degraded (R-15); the in-memory flag is left untouched in that
-   * case so memory, disk and the renderer's toggle cannot disagree.
-   */
-  public setAutoAnswerEnabled(enabled: boolean): boolean {
-    const persisted = SettingsManager.getInstance().set('autoAnswerEnabled', enabled);
-    if (!persisted) {
-      console.warn(`[AppState] autoAnswerEnabled=${enabled} NOT persisted — settings store degraded; keeping ${this._autoAnswerEnabled}`);
-      return false;
-    }
-    this._autoAnswerEnabled = enabled;
-    // Drop anything already armed: turning the toggle off mid-meeting must not
-    // let one more auto-answer land a second later.
-    if (!enabled) this.cancelAutoAnswer();
-    console.log(`[AppState] autoAnswerEnabled set to ${enabled}`);
-    return true;
   }
 
   public setDisguise(mode: 'terminal' | 'settings' | 'activity' | 'none'): void {
@@ -7867,7 +6356,6 @@ export class AppState {
       this.windowHelper.getLauncherWindow(),
       this.windowHelper.getOverlayWindow(),
       this.settingsWindowHelper.getSettingsWindow(),
-      this.modelSelectorWindowHelper.getWindow(),
     ];
     const sent = new Set<number>();
     for (const win of windows) {
@@ -7979,34 +6467,6 @@ async function initializeApp() {
   })
   logStartupPhase('after-app-whenReady', { userData: app.getPath('userData') });
 
-  // 2a-verify. Context OS flag-parity assertion (2026-07-14 real-app
-  // source-switch repair): no-op unless NATIVELY_VERIFICATION_MODE=1 is
-  // explicitly set (internal benchmark/CI/soak runs only). Fails fast and
-  // loudly if this Electron process's effective flags don't match what a
-  // verification run assumes — the exact class of drift that let the
-  // benchmark and the real app silently exercise different Context OS
-  // behavior on the same build.
-  //
-  // HARD EXIT (code-review 2026-07-14 round 2): a throw here would otherwise
-  // propagate into initializeApp()'s generic top-level .catch(), which logs
-  // but never exits — leaving a half-initialized, windowless process alive
-  // indefinitely. That defeats the whole point for a CI/soak harness, which
-  // needs an unambiguous nonzero exit code, not a hang it has to time out on.
-  // Mirrors the existing [nativeArch] gate precedent (main.ts ~line 219):
-  // print the reason, then app.exit(1) (or process.exit(1) if Electron's
-  // app isn't available, e.g. under a bare-Node verification harness).
-  try {
-    const { assertVerificationFlagsOrThrow } = require('./intelligence/intelligenceFlags') as typeof import('./intelligence/intelligenceFlags');
-    assertVerificationFlagsOrThrow();
-  } catch (verifyErr: any) {
-    console.error('[ContextOS] verification flag assertion failed — exiting:', verifyErr?.message || verifyErr);
-    if (typeof app?.exit === 'function') {
-      app.exit(1);
-    } else {
-      process.exit(1);
-    }
-  }
-
   // 2a. PRE-EMPTIVE dock hide / activation-policy clamp: must happen before ANY
   // operation that causes macOS to register a dock entry (app.setName, the
   // LaunchServices live-rename in _applyDisguise, BrowserWindow creation, etc.).
@@ -8088,8 +6548,7 @@ async function initializeApp() {
     console.warn('[Init] TelemetryService configure threw (non-fatal):', err);
   }
 
-  // Initialize CredentialsManager and load keys explicitly
-  // This fixes the issue where keys (especially in production) aren't loaded in time for RAG/LLM
+  // Initialize CredentialsManager and load STT credentials explicitly.
   logStartupPhase('credentials-init:start');
   const { CredentialsManager } = require('./services/CredentialsManager');
   CredentialsManager.getInstance().init();
@@ -8099,17 +6558,6 @@ async function initializeApp() {
   logStartupPhase('app-state:get-instance:start');
   const appState = AppState.getInstance()
   logStartupPhase('app-state:get-instance:complete')
-
-  // Explicitly load credentials into helpers
-  appState.processingHelper.loadStoredCredentials();
-
-  // Seed the un-deletable General mode once at startup. Idempotent.
-  try {
-    const { ModesManager } = require('./services/ModesManager');
-    ModesManager.getInstance().ensureSeeded();
-  } catch (err) {
-    console.warn('[Init] ModesManager.ensureSeeded threw (non-fatal):', err);
-  }
 
   // Initialize IPC handlers before window creation
   initializeIpcHandlers(appState)
@@ -8149,15 +6597,6 @@ async function initializeApp() {
     const downloadService = LocalModelDownloadService.getInstance();
     downloadService.registerProvider(createWhisperDownloadProvider());
     downloadService.registerProvider(createNemotronDownloadProvider());
-    // 2026-07-06: lazy download for the reranker (smart-retrieval Phase 1).
-    // The 283 MB bge-reranker-base model is no longer bundled — it is fetched
-    // on first document-grounded mode activation via ModesManager.
-    try {
-        const { createRerankerDownloadProvider } = require('./rag/rerankerDownloadProvider');
-        downloadService.registerProvider(createRerankerDownloadProvider());
-    } catch (e: any) {
-        console.warn('[main] Reranker download provider registration failed (non-fatal):', e?.message);
-    }
   } catch (e: any) {
     console.warn('[main] LocalModelDownloadService init failed (non-fatal):', e?.message);
   }
@@ -8165,55 +6604,10 @@ async function initializeApp() {
   // Apply the full disguise payload (names, dock icon, AUMID) early
   appState.applyInitialDisguise();
 
-  // Ollama is an external optional provider. Do not spawn it on startup unless
-  // the user explicitly selected/opted into it; Natively's packaged fallback
-  // stack must work without Ollama installed.
-  try {
-    const settingsManager = SettingsManager.getInstance();
-    const defaultModel = CredentialsManager.getInstance().getDefaultModel();
-    const shouldStartOllama =
-      settingsManager.get('autoStartOllama') === true ||
-      defaultModel.startsWith('ollama-') ||
-      defaultModel.startsWith('ollama:') ||
-      process.env.NATIVELY_AUTO_START_OLLAMA === '1';
-    if (shouldStartOllama) {
-      OllamaManager.getInstance().ensureRunning({
-        reason: settingsManager.get('autoStartOllama') === true ? 'auto-start-setting' : 'startup-selected',
-        selectedModel: defaultModel,
-      }).catch((err: any) => console.warn('[OllamaManager] Startup ensureRunning failed (non-fatal):', err?.message || err));
-    } else {
-      OllamaManager.getInstance().skipStartup('Ollama not selected; startup skipped');
-      console.log('[OllamaManager] Skipping Ollama startup; Ollama provider not selected');
-    }
-  } catch (err: any) {
-    console.warn('[OllamaManager] Startup selection check failed (non-fatal):', err?.message || err);
-    OllamaManager.getInstance().skipStartup('Ollama startup skipped after selection check failure');
-  }
-
-  // NOTE: CredentialsManager.init() and loadStoredCredentials() are already called
-  // above before this block — do NOT call them again here to avoid double key-load.
-
   // Anonymous install ping - one-time, non-blocking
   // See electron/services/InstallPingManager.ts for privacy details
   const { sendAnonymousInstallPing } = require('./services/InstallPingManager');
   sendAnonymousInstallPing();
-
-  // Usage outbox — durable delivery of client-reported (BYOK) usage events.
-  //
-  // Started AFTER credentials are loaded, but the key is passed as a GETTER
-  // rather than a value: a user who pastes their Natively key ten minutes from
-  // now must not need a restart before their queued events can drain. Inert
-  // unless NATIVELY_USAGE_OUTBOX_ENABLED is set, so shipping this changes
-  // nothing until the flag is switched on.
-  try {
-    const { usageOutbox } = require('./services/UsageOutbox');
-    usageOutbox.start(() => CredentialsManager.getInstance().getNativelyApiKey());
-    // Drain anything queued while the app was closed, without waiting a full
-    // dispatch interval. Deliberately not awaited — startup must not block on it.
-    setTimeout(() => { void usageOutbox.dispatchOnce(); }, 5000);
-  } catch (err: any) {
-    console.warn('[UsageOutbox] startup failed (non-fatal):', err?.message || err);
-  }
 
   // Load the Google Service Account key for Speech-to-Text: the persisted path
   // first, then GOOGLE_APPLICATION_CREDENTIALS (set in a terminal but not for a
@@ -8283,54 +6677,6 @@ async function initializeApp() {
 
   // DEV-ONLY: thinking-budget sweep. Runs after credentials are loaded (so the
   // LIVE Gemini key is available — the .env key is billing-dead), prints the
-  // table + writes userData/thinking-budget-bench-results.json, then quits.
-  //   THINKING_BENCH=1 npm run electron:build
-  //   THINKING_BENCH=1 THINKING_BENCH_BUDGETS=0,256,512,1024 THINKING_BENCH_REPEATS=2 npm run electron:build
-  if (process.env.THINKING_BENCH === '1') {
-    (async () => {
-      try {
-        const llmHelper = appState.processingHelper?.getLLMHelper?.();
-        if (!llmHelper) { console.error('[ThinkingBudgetBench] LLMHelper unavailable'); app.quit(); return; }
-        const { runThinkingBudgetBench } = require('./services/dev/ThinkingBudgetBench');
-        const budgets = (process.env.THINKING_BENCH_BUDGETS || '0,128,512,1024,-1').split(',').map((s: string) => Number(s.trim()));
-        const repeats = Number(process.env.THINKING_BENCH_REPEATS || '1');
-        const model = process.env.THINKING_BENCH_MODEL || 'gemini-3.1-flash-lite';
-        // Give the embedding/provider init a moment to settle.
-        await new Promise(r => setTimeout(r, 2000));
-        await runThinkingBudgetBench(llmHelper, { budgets, repeats, model, log: (s: string) => console.log(s) });
-      } catch (e: any) {
-        console.error('[ThinkingBudgetBench] failed:', e?.message || e);
-      } finally {
-        console.log('[ThinkingBudgetBench] done — quitting.');
-        app.quit();
-      }
-    })();
-    return; // skip the rest of startup (no meeting/STT prewarm needed for the bench)
-  }
-
-  // DEV-ONLY: thinking MATRIX (budgets × levels) on a focused problem subset.
-  //   THINKING_MATRIX=1 THINKING_BENCH_MODEL=gemini-3.7-flash THINKING_BENCH_DATASET=$(pwd)/electron/services/dev/cf10.json npm run electron:build
-if (process.env.THINKING_MATRIX === '1') {
-    (async () => {
-      try {
-        const llmHelper = appState.processingHelper?.getLLMHelper?.();
-        if (!llmHelper) { console.error('[ThinkingMatrix] LLMHelper unavailable'); app.quit(); return; }
-        const { runThinkingMatrix } = require('./services/dev/ThinkingBudgetBench');
-        const model = process.env.THINKING_BENCH_MODEL || 'gemini-3.1-flash-lite';
-        const delayMs = Number(process.env.THINKING_BENCH_DELAY_MS || '500');
-        const configs = process.env.THINKING_MATRIX_CONFIGS || undefined;
-        await new Promise(r => setTimeout(r, 2000));
-        await runThinkingMatrix(llmHelper, { model, delayMs, configs, log: (s: string) => console.log(s) });
-      } catch (e: any) {
-        console.error('[ThinkingMatrix] failed:', e?.message || e);
-      } finally {
-        console.log('[ThinkingMatrix] done — quitting.');
-        app.quit();
-      }
-    })();
-    return;
-  }
-
   // PERF: pre-construct STT provider objects so the meeting-start critical
   // path doesn't pay for class init + listener wiring. Runs after all
   // credentials are loaded (so the provider can read its API key) and is
@@ -8392,46 +6738,6 @@ if (process.env.THINKING_MATRIX === '1') {
     }
   }
 
-  // Run the local-fallback preflight AFTER the launcher paints. We schedule
-  // it via setTimeout so the visible launch is not blocked by:
-  //   - native module requires (onnxruntime-node, sqlite-vec)
-  //   - transformers.js / @huggingface/transformers probe
-  //   - reading the bundled model file sizes
-  // The preflight itself never blocks the main thread for more than a few
-  // hundred ms; we add a second safety net: if the app is quitting when
-  // the timer fires, skip the preflight (its writes to ProviderStatusRegistry
-  // would still succeed but its reads of process.resourcesPath / app.getPath
-  // can throw during teardown). Also wrapped in try/catch so a synchronous
-  // throw in the require() or in runLocalFallbackPreflight cannot crash
-  // the main process. Idempotent: runLocalFallbackPreflight is single-flighted.
-  const preflightTimer = setTimeout(() => {
-    if (appState.isQuitting?.()) {
-      console.log('[LocalFallbackPreflight] skipped — app is quitting');
-      return;
-    }
-    try {
-      const llmHelper = appState.processingHelper.getLLMHelper();
-      const { runLocalFallbackPreflight } = require('./services/LocalFallbackPreflight');
-      runLocalFallbackPreflight({ ollamaSelected: llmHelper.isUsingOllama?.() === true })
-        .catch((err: any) => console.warn('[LocalFallbackPreflight] failed to run (non-fatal):', err?.message || err));
-    } catch (err: any) {
-      console.warn('[LocalFallbackPreflight] scheduling failed (non-fatal):', err?.message || err);
-    }
-  }, Number(process.env.NATIVELY_LOCAL_PREFLIGHT_DELAY_MS || '1500'));
-  // Don't let the preflight timer keep the process alive past quit.
-  if (preflightTimer && typeof preflightTimer.unref === 'function') preflightTimer.unref();
-
-  // Defer the zero-shot intent classifier warmup until after the launcher has
-  // had a chance to paint and settle. The classifier still lazy-loads on first
-  // use, so this only moves startup CPU work out of the visible launch path.
-  setTimeout(() => {
-    try {
-      warmupIntentClassifier();
-    } catch (err) {
-      console.warn('[Init] Intent classifier warmup scheduling failed (non-fatal):', err);
-    }
-  }, Number(process.env.NATIVELY_INTENT_WARMUP_DELAY_MS || '2500'));
-
   // DUAL-DOCK-ICON FIX (promotion half): now that the disguised name/icon are
   // applied and the window exists, promote back to 'regular' so a SINGLE dock
   // tile appears together with the window. Gated on darwin && !undetectable so
@@ -8483,31 +6789,6 @@ if (process.env.THINKING_MATRIX === '1') {
 
   // Pre-create detached overlay companion windows in background for faster first open
   appState.settingsWindowHelper.preloadWindow()
-  appState.modelSelectorWindowHelper.preloadWindow()
-
-  // Restore Phone Mirror service if it was enabled in a previous session.
-  // Failure here is non-fatal — the user can re-enable from Settings.
-  //
-  // DIAGNOSTIC (2026-07-11): NATIVELY_DISABLE_PHONE_MIRROR=1 stops the PhoneMirror
-  // WebSocket server from ever starting. On the Windows repro, the launcher
-  // renderer's native RSS explodes (497→2008MB in ~4s, flat JS heap) within
-  // seconds of `[PhoneMirror] companion extension connected` — the same trigger
-  // in 3 separate logs. This flag lets the (frozen) user boot WITHOUT the WS
-  // server so the phone/companion extension can't connect. If the leak vanishes,
-  // PhoneMirror connect is confirmed as the trigger.
-  const disablePhoneMirrorOnBoot = process.env.NATIVELY_DISABLE_PHONE_MIRROR === '1';
-  if (
-    shouldStartPhoneMirrorOnBoot({
-      disablePhoneMirror: disablePhoneMirrorOnBoot,
-      phoneMirrorEnabled: !!SettingsManager.getInstance().get('phoneMirrorEnabled'),
-    })
-  ) {
-    PhoneMirrorService.getInstance()
-      .start({ exposeOnLan: !!SettingsManager.getInstance().get('phoneMirrorExposeOnLan'), persist: false })
-      .catch((err) => console.error('[Init] PhoneMirror auto-start failed:', err));
-  } else if (disablePhoneMirrorOnBoot) {
-    console.warn('[LeakTest] NATIVELY_DISABLE_PHONE_MIRROR=1 → PhoneMirror WS server NOT started this run');
-  }
 
   // One-time macOS screen recording permission prompt.
   //
@@ -8556,11 +6837,7 @@ if (process.env.THINKING_MATRIX === '1') {
           // NOTE: Do NOT read afterStatus here — TCC response is async (dialog still open).
           // startMeeting() reads the status when the user actually tries to use audio.
 
-        } else if (screenStatus === 'denied' && !appState.getAmbientChatEnabled()) {
-          // Ambient AI Chat (Settings > General) means meetings never capture
-          // system audio at all, so a denied Screen Recording grant is moot —
-          // skip the banner rather than warning about a capability the app
-          // isn't going to use.
+        } else if (screenStatus === 'denied') {
           const screenCapability = await resolveMacScreenCaptureCapability('startup permission check');
           if (screenCapability.effectiveDenied) {
             // Returning user who previously denied — show the banner immediately at startup
@@ -8584,11 +6861,7 @@ if (process.env.THINKING_MATRIX === '1') {
         try {
           const micStatus = systemPreferences.getMediaAccessStatus('microphone');
           console.log(`[Init] Microphone permission status at startup: ${micStatus}`);
-          // Ambient AI Chat never touches the mic either — see the
-          // screen-recording branch above for why these banners are skipped.
-          if (appState.getAmbientChatEnabled()) {
-            // skip — no banner
-          } else if (micStatus === 'denied') {
+          if (micStatus === 'denied') {
             console.warn('[Init] Microphone was previously denied — notifying UI banner.');
             appState.sendAudioCaptureFailed({
               channel: 'mic',
@@ -8646,11 +6919,6 @@ if (process.env.THINKING_MATRIX === '1') {
     console.error('[Main] Failed to initialize CalendarManager:', e);
   }
 
-  // Recover unprocessed meetings (persistence check)
-  appState.getIntelligenceManager().recoverUnprocessedMeetings().catch(err => {
-    console.error('[Main] Failed to recover unprocessed meetings:', err);
-  });
-
   logStartupPhase('initializeApp:complete');
 
   maybeForceDevPermissionBanner(appState);
@@ -8685,13 +6953,6 @@ if (process.env.THINKING_MATRIX === '1') {
     }
   })
 
-  function stopAppManagedHindsight(reason: string): void {
-    try {
-      const { HindsightManager } = require('./services/HindsightManager');
-      HindsightManager.getInstance().stopSync();
-    } catch { /* optional */ }
-  }
-
   function checkpointDatabase(reason: string): void {
     try {
       const { DatabaseManager } = require('./db/DatabaseManager');
@@ -8704,7 +6965,6 @@ if (process.env.THINKING_MATRIX === '1') {
   app.on('will-quit', () => {
     appState.stopNativeOomTraceSampling();
     nativeOomTrace.stop('will-quit');
-    stopAppManagedHindsight('will-quit');
     checkpointDatabase('will-quit');
   });
 
@@ -8721,8 +6981,6 @@ if (process.env.THINKING_MATRIX === '1') {
       webContentsUrl: urlNow || null,
     });
     console.warn('[main] render-process-gone:', details);
-    stopAppManagedHindsight('render-process-gone');
-
     // RECOVERY (2026-07-10): a renderer crash (e.g. the Fontations font trap on
     // macOS 26/27 — see the disable-features mitigation at top-of-module) kills
     // only the render process; the BrowserWindow and the main process survive.
@@ -8757,10 +7015,8 @@ if (process.env.THINKING_MATRIX === '1') {
       return;
     }
 
-    // Only auto-reload real user-facing windows. Transient/hidden helpers
-    // (cropper = screenshot overlay; model-selector = hidden preload with a
-    // known forceRestartOllama side-effect) should NOT be blindly reloaded —
-    // they get recreated on next open. Reload launcher / settings / overlay.
+    // Only auto-reload real user-facing windows. Transient screenshot helpers
+    // are recreated on next open rather than reloaded.
     const isRecoverableWindow =
       urlNow === '' /* URL unavailable — assume the main launcher */ ||
       /[?&]window=(launcher|settings|overlay)\b/.test(urlNow) ||
@@ -8842,7 +7098,6 @@ if (process.env.THINKING_MATRIX === '1') {
     // persistence loss. Only close on an actual teardown, where the child
     // exodus is part of the quit.
     if (appState.isQuitting?.()) {
-      stopAppManagedHindsight('child-process-gone');
       emergencyCloseDatabase('child-process-gone');
     }
   });
@@ -8869,20 +7124,11 @@ if (process.env.THINKING_MATRIX === '1') {
     console.log("App is quitting, cleaning up resources...");
     appState.setQuitting(true);
 
-    // Flush any queued context-debug JSONL writes. Best-effort and async —
-    // completed lines are already durable (append-per-record), so a hard kill
-    // loses at most the in-flight tail.
-    try {
-      const { flushContextDebugWriter } = require('./context-intelligence/debug/jsonl-writer');
-      void flushContextDebugWriter();
-    } catch { /* debug logging only */ }
-
     // Stop the default-output watcher immediately after setting the quitting
     // flag so any straggler interval tick observes _isQuitting before native
     // audio handles start tearing down.
     try {
       appState.stopDefaultOutputWatcherForShutdown?.();
-      appState.disposeAutoAnswerForShutdown?.();
     } catch (e) {
       console.error('[main] Failed to stop DefaultOutputWatcher during shutdown:', e);
     }
@@ -8900,11 +7146,6 @@ if (process.env.THINKING_MATRIX === '1') {
     // typically) and writes any pending WAL frames to the main .db
     // before exit. Idempotent and safe to call even when db is null.
     checkpointDatabase('before-quit');
-
-    // Stop an app-managed Hindsight server SYNCHRONOUSLY (kills the detached process group
-    // → no orphaned Python/Postgres). No-op unless we spawned one. Must be sync: the app
-    // can exit before any async kill completes.
-    stopAppManagedHindsight('before-quit');
 
     // Review-prompt service: close any in-flight session so total_usage_ms
     // captures this run, then flush the debounced state write (250ms window)
@@ -8943,9 +7184,8 @@ if (process.env.THINKING_MATRIX === '1') {
     // remain by the time we return.
     //
     // ORDERING NOTE: this MUST happen before any subsequent napi-touching
-    // cleanup (cropper.dispose, ollama.stop, phoneMirror.dispose). Those
-    // can spawn their own native threads or release napi resources, which
-    // would race with our worker if it's still alive.
+    // cleanup. Native helpers can release resources that would race with the
+    // keyboard worker if it were still alive.
     if (process.platform === 'darwin' || process.platform === 'win32') {
       // Stop BEFORE the napi-touching cleanup below on Windows too: the Windows
       // hook worker holds an Arc<ThreadsafeFunction> and calls into napi from a
@@ -8966,19 +7206,6 @@ if (process.env.THINKING_MATRIX === '1') {
       appState.cropperWindowHelper.dispose();
     }
 
-    // Cancel any pending RAG auto-reindex timer (could fire ~15s — or the long
-    // drain-poll — after quit) and terminate the VectorStore worker thread.
-    try {
-      const rag = appState.getRAGManager();
-      rag?.cancelPendingReindex();
-      void rag?.dispose();
-    } catch (e) {
-      console.error('[main] Failed to dispose RAGManager during shutdown:', e);
-    }
-
-    // Kill Ollama if we started it
-    OllamaManager.getInstance().stop();
-
     // Stop any in-flight Settings > Audio test so the OS mic indicator turns
     // off cleanly on quit. Without this, a user who quits while on the Audio
     // tab leaves `audioTestCapture` running on the deferred setImmediate path,
@@ -8990,11 +7217,6 @@ if (process.env.THINKING_MATRIX === '1') {
     } catch (e) {
       console.error('[main] Failed to stop audio test during shutdown:', e);
     }
-
-    // Tear down the Phone Mirror service so the OS port is freed cleanly.
-    PhoneMirrorService.getInstance().dispose().catch((err) =>
-      console.error('[Main] PhoneMirror dispose failed:', err)
-    );
 
     // Best-effort WAL checkpoint so a crash/force-quit followed by immediate
     // relaunch has less recovery work and fewer chances to trip over a large
@@ -9015,7 +7237,6 @@ if (process.env.THINKING_MATRIX === '1') {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().scrubMemory();
-      appState.processingHelper.getLLMHelper().scrubKeys();
       console.log('[Main] Credentials scrubbed from memory on quit');
     } catch (e) {
       console.error('[Main] Failed to scrub credentials on quit:', e);

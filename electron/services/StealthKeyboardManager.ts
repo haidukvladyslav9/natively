@@ -355,9 +355,8 @@ export class StealthKeyboardManager {
             return false;
         }
 
-        // ROUND 4 FIX (#3): hide aux windows that are still visible. With
-        // panel-nonactivating, NSPanel blur fires unreliably so Settings /
-        // ModelSelector / Cropper can stay open after the user thinks they
+        // Hide settings if it is still visible. With panel-nonactivating,
+        // NSPanel blur fires unreliably, so it can stay open after the user
         // dismissed them. If the tap engages while one is open, the user
         // sees a stale window with dead inputs (tap intercepts keystrokes
         // at OS level → routes to overlay, not the aux window's React
@@ -371,9 +370,8 @@ export class StealthKeyboardManager {
     }
 
     /**
-     * Hide Settings / ModelSelector / Cropper if they happen to be visible
-     * when the stealth tap engages. Lazy require()'d to avoid pulling those
-     * helpers into early boot.
+     * Hide Settings if it is visible when the stealth tap engages. Lazy
+     * require()'d to avoid pulling the helper into early boot.
      */
     private hideAuxWindowsForStealth(): void {
         try {
@@ -383,10 +381,6 @@ export class StealthKeyboardManager {
             const settings = app?.settingsWindowHelper?.getSettingsWindow?.();
             if (settings && !settings.isDestroyed() && settings.isVisible()) {
                 app.settingsWindowHelper.closeWindow();
-            }
-            const modelSel = app?.modelSelectorWindowHelper?.getWindow?.();
-            if (modelSel && !modelSel.isDestroyed() && modelSel.isVisible()) {
-                app.modelSelectorWindowHelper.hideWindow();
             }
             // Cropper: don't auto-close — if the user is mid-selection, hiding
             // would lose their crop. Cropper's own 'show' handler stops the
