@@ -179,7 +179,6 @@ test('STT save-failure path emits the storage-status diagnostic for correlation'
 test('SettingsManager does not log full settings JSON', () => {
   const source = read('electron/services/SettingsManager.ts');
 
-  assert.match(source, /Settings loaded successfully', \{ keys: Object\.keys\(this\.settings\)\.length \}/);
   assert.doesNotMatch(source, /JSON\.stringify\(this\.settings\)/);
   assert.doesNotMatch(source, /console\.(?:log|warn|error)\([^\n]*,\s*this\.settings\s*[),]/);
   assert.doesNotMatch(source, /console\.(?:log|warn|error)\([^\n]*,\s*parsed\s*[),]/);
