@@ -706,6 +706,16 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onO
                     </div>
                     <button
                         onClick={() => {
+                            void window.electronAPI.openChatGptWeb();
+                        }}
+                        title={t("Open ChatGPT Web")}
+                        aria-label={t("Open ChatGPT Web")}
+                        className={`p-2 text-text-secondary hover:text-text-primary transition-all duration-300 ${isLight ? 'hover:drop-shadow-[0_0_6px_rgba(0,0,0,0.25)]' : 'hover:drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]'}`}
+                    >
+                        <MessageSquare size={18} />
+                    </button>
+                    <button
+                        onClick={() => {
                             onOpenSettings();
                         }}
                         title={t("Settings")}

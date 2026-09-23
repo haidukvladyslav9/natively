@@ -719,6 +719,32 @@ export function initializeIpcHandlers(appState: AppState): void {
     return { success: true };
   });
 
+  safeHandle('chatgpt-web:open', async () => {
+    await appState.chatGptWebWindowHelper.showWindow();
+    return { success: true };
+  });
+
+  safeHandle(
+    'chatgpt-web:send',
+    async (_event, payload: { prompt?: string; imagePaths?: string[] }) => {
+      const requestedPaths = Array.isArray(payload?.imagePaths) ? payload.imagePaths : [];
+      const allowedPaths = new Set([
+        ...appState.getScreenshotQueue(),
+        ...appState.getExtraScreenshotQueue(),
+      ].map(filePath => path.resolve(filePath)));
+      const imagePaths = requestedPaths.map(filePath => path.resolve(filePath));
+      if (imagePaths.some(filePath => !allowedPaths.has(filePath))) {
+        console.warn('[IPC] chatgpt-web:send rejected a path outside the screenshot queues.');
+        return { success: false, error: 'Only screenshots captured by Natively can be sent.' };
+      }
+
+      return appState.chatGptWebWindowHelper.send({
+        prompt: typeof payload?.prompt === 'string' ? payload.prompt : '',
+        imagePaths,
+      });
+    },
+  );
+
   safeHandle('delete-screenshot', async (event, filePath: string) => {
     // Guard: only allow deletion of files within the app's own userData directory
     const userDataDir = app.getPath('userData');

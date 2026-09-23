@@ -530,6 +530,13 @@ interface ElectronAPI {
   forceRestartOllama: () => Promise<void>;
   isOllamaReachable: () => Promise<boolean>;
 
+  // User-operated ChatGPT website window
+  openChatGptWeb: () => Promise<{ success: boolean; error?: string }>;
+  sendToChatGptWeb: (payload: {
+    prompt?: string;
+    imagePaths?: string[];
+  }) => Promise<{ success: boolean; error?: string }>;
+
   // Settings Window
   toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>;
 
@@ -2108,6 +2115,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   modelSelectorCloseIfOpen: () => ipcRenderer.invoke('model-selector:close-if-open'),
   forceRestartOllama: () => ipcRenderer.invoke('force-restart-ollama'),
   isOllamaReachable: () => ipcRenderer.invoke('is-ollama-reachable'),
+
+  openChatGptWeb: () => ipcRenderer.invoke('chatgpt-web:open'),
+  sendToChatGptWeb: (payload: { prompt?: string; imagePaths?: string[] }) =>
+    ipcRenderer.invoke('chatgpt-web:send', payload),
 
   // Settings Window
   toggleSettingsWindow: (coords?: { x: number; y: number }) =>

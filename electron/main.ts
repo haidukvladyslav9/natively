@@ -1205,6 +1205,7 @@ import { WindowHelper } from "./WindowHelper"
 import { SettingsWindowHelper } from "./SettingsWindowHelper"
 import { ModelSelectorWindowHelper } from "./ModelSelectorWindowHelper"
 import { CropperWindowHelper } from "./CropperWindowHelper"
+import { ChatGptWebWindowHelper } from "./ChatGptWebWindowHelper"
 import { ScreenshotHelper } from "./ScreenshotHelper"
 import { KeybindManager } from "./services/KeybindManager"
 import { ProcessingHelper } from "./ProcessingHelper"
@@ -1280,6 +1281,8 @@ interface ScreenshotCaptureSession {
   windowMode: ScreenshotWindowMode;
   wasSettingsVisible: boolean;
   wasModelSelectorVisible: boolean;
+  wasChatGptWebVisible: boolean;
+  wasChatGptWebFocused: boolean;
   overlayBounds: Electron.Rectangle | null;
   overlayDisplayId: number | null;
   restoreWithoutFocus: boolean;
@@ -1345,6 +1348,7 @@ export class AppState {
   public settingsWindowHelper: SettingsWindowHelper
   public modelSelectorWindowHelper: ModelSelectorWindowHelper
   public cropperWindowHelper: CropperWindowHelper
+  public chatGptWebWindowHelper: ChatGptWebWindowHelper
   private screenshotHelper: ScreenshotHelper
   public processingHelper: ProcessingHelper
 
@@ -1545,6 +1549,7 @@ export class AppState {
     this.settingsWindowHelper = new SettingsWindowHelper()
     this.modelSelectorWindowHelper = new ModelSelectorWindowHelper()
     this.cropperWindowHelper = new CropperWindowHelper()
+    this.chatGptWebWindowHelper = new ChatGptWebWindowHelper()
 
     // 3. Initialize other helpers
     this.screenshotHelper = new ScreenshotHelper(this.view)
@@ -1554,6 +1559,7 @@ export class AppState {
     this.settingsWindowHelper.setContentProtection(this.isUndetectable);
     this.modelSelectorWindowHelper.setContentProtection(this.isUndetectable);
     this.cropperWindowHelper.setContentProtection(this.isUndetectable);
+    this.chatGptWebWindowHelper.setContentProtection(this.isUndetectable);
 
     if (process.platform === 'win32' || process.platform === 'darwin') {
       this.cropperWindowHelper.preload();
@@ -7002,6 +7008,7 @@ export class AppState {
   ): ScreenshotCaptureSession {
     const settingsWindow = this.settingsWindowHelper.getSettingsWindow();
     const modelSelectorWindow = this.modelSelectorWindowHelper.getWindow();
+    const chatGptWebWindow = this.chatGptWebWindowHelper.getWindow();
 
     return {
       captureKind,
@@ -7009,6 +7016,8 @@ export class AppState {
       windowMode: this.windowHelper.getCurrentWindowMode(),
       wasSettingsVisible: !!settingsWindow && !settingsWindow.isDestroyed() && settingsWindow.isVisible(),
       wasModelSelectorVisible: !!modelSelectorWindow && !modelSelectorWindow.isDestroyed() && modelSelectorWindow.isVisible(),
+      wasChatGptWebVisible: !!chatGptWebWindow && !chatGptWebWindow.isDestroyed() && chatGptWebWindow.isVisible(),
+      wasChatGptWebFocused: !!chatGptWebWindow && !chatGptWebWindow.isDestroyed() && chatGptWebWindow.isFocused(),
       overlayBounds: this.windowHelper.getLastOverlayBounds(),
       overlayDisplayId: this.windowHelper.getLastOverlayDisplayId(),
       restoreWithoutFocus: process.platform === 'darwin' || !restoreFocus
@@ -7034,6 +7043,10 @@ export class AppState {
   }
 
   private hideWindowsForScreenshot(session: ScreenshotCaptureSession): void {
+    if (session.wasChatGptWebVisible) {
+      this.chatGptWebWindowHelper.getWindow()?.hide();
+    }
+
     if (session.wasModelSelectorVisible) {
       this.modelSelectorWindowHelper.hideWindow();
     }
@@ -7073,6 +7086,12 @@ export class AppState {
         const { x, y } = modelSelectorWindow.getBounds();
         this.modelSelectorWindowHelper.showWindow(x, y, { activate });
       }
+    }
+
+    if (session.wasChatGptWebVisible) {
+      void this.chatGptWebWindowHelper.showWindow({
+        activate: session.wasChatGptWebFocused,
+      });
     }
   }
 
@@ -7353,6 +7372,7 @@ export class AppState {
     this.settingsWindowHelper.setContentProtection(state)
     this.modelSelectorWindowHelper.setContentProtection(state)
     this.cropperWindowHelper.setContentProtection(state)
+    this.chatGptWebWindowHelper.setContentProtection(state)
 
     if (process.platform === 'win32') {
       this.windowHelper.syncOverlayInteractionPolicy();
@@ -7529,6 +7549,7 @@ export class AppState {
     this.settingsWindowHelper.reassertContentProtection();
     this.modelSelectorWindowHelper.reassertContentProtection();
     this.cropperWindowHelper.reassertContentProtection();
+    this.chatGptWebWindowHelper.reassertContentProtection();
   }
 
   public getUndetectable(): boolean {

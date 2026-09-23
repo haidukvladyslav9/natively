@@ -446,6 +446,13 @@ export interface ElectronAPI {
   forceRestartOllama: () => Promise<void>;
   isOllamaReachable: () => Promise<boolean>;
 
+  // User-operated ChatGPT website window
+  openChatGptWeb: () => Promise<{ success: boolean; error?: string }>;
+  sendToChatGptWeb: (payload: {
+    prompt?: string;
+    imagePaths?: string[];
+  }) => Promise<{ success: boolean; error?: string }>;
+
   // Settings Window
   toggleSettingsWindow: (coords?: { x: number; y: number }) => Promise<void>;
 

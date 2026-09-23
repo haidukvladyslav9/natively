@@ -1083,6 +1083,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
   const t = useT();
   const [isExpanded, setIsExpanded] = useState(true);
   const [inputValue, setInputValue] = useState('');
+  const [isChatGptWebSending, setIsChatGptWebSending] = useState(false);
   const [availableSkills, setAvailableSkills] = useState<SkillSummary[]>([]);
   const [skillPickerIndex, setSkillPickerIndex] = useState(0);
   const { shortcuts, isShortcutPressed } = useShortcuts();
@@ -6346,6 +6347,41 @@ Provide only the answer, nothing else.`;
     textInputRef.current?.focus();
   }, [inputValue]);
 
+  const handleChatGptWebSubmit = async () => {
+    if ((!inputValue.trim() && attachedContext.length === 0) || isChatGptWebSending) return;
+    setIsChatGptWebSending(true);
+    try {
+      const result = await window.electronAPI.sendToChatGptWeb({
+        prompt: inputValue.trim(),
+        imagePaths: attachedContext.map(item => item.path),
+      });
+      if (!result.success) {
+        setMessages(prev => [
+          ...prev,
+          {
+            id: genMessageId(),
+            role: 'system',
+            text: result.error || 'Could not send this message to ChatGPT Web.',
+          },
+        ]);
+        return;
+      }
+      setInputValue('');
+      setAttachedContext([]);
+    } catch (error) {
+      setMessages(prev => [
+        ...prev,
+        {
+          id: genMessageId(),
+          role: 'system',
+          text: error instanceof Error ? error.message : 'Could not send this message to ChatGPT Web.',
+        },
+      ]);
+    } finally {
+      setIsChatGptWebSending(false);
+    }
+  };
+
   const handleManualSubmit = async () => {
     if (!inputValue.trim() && attachedContext.length === 0) return;
 
@@ -9234,6 +9270,25 @@ Provide only the answer, nothing else.`;
                       </button>
                     </div>
                   </div>
+
+                  <button
+                    onClick={handleChatGptWebSubmit}
+                    disabled={isChatGptWebSending || (!inputValue.trim() && attachedContext.length === 0)}
+                    title={t('Send to ChatGPT Web')}
+                    aria-label={t('Send to ChatGPT Web')}
+                    className={`
+                                    w-7 h-7 rounded-full flex items-center justify-center
+                                    interaction-base interaction-press
+                                    ${
+                                      !isChatGptWebSending && (inputValue.trim() || attachedContext.length > 0)
+                                        ? 'overlay-icon-surface overlay-icon-surface-hover overlay-text-interactive'
+                                        : 'overlay-icon-surface overlay-text-muted cursor-not-allowed'
+                                    }
+                                `}
+                    style={appearance.iconStyle}
+                  >
+                    <Globe className={`w-3.5 h-3.5 ${isChatGptWebSending ? 'animate-pulse' : ''}`} />
+                  </button>
 
                   <button
                     onClick={handleManualSubmit}
