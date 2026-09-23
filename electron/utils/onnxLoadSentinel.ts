@@ -1,13 +1,12 @@
 // electron/utils/onnxLoadSentinel.ts
 //
-// Cross-launch disk sentinel for every local ONNX model the app loads.
+// Cross-launch disk sentinel for the local Whisper models the app loads.
 // Companion to electron/utils/onnxThreadConfig.ts (which guards the cross-loader
 // in-memory concurrency gate) and electron/audio/whisper/modelPreloader.ts
 // (which owns the Whisper family's in-process recent-failure cooldown).
 //
 // WHY THIS EXISTS (2026-07-08 audit):
-// Every local ONNX consumer (Whisper, intent classifier, embeddings, reranker)
-// runs `@huggingface/transformers` + `onnxruntime-node` inside a
+// Local Whisper runs `@huggingface/transformers` + `onnxruntime-node` inside a
 // `worker_threads.Worker`. Native onnxruntime-node aborts (BFCArena /
 // posix_memalign / libc++ symbol mismatches on macOS 12) can take down the
 // host process BEFORE the JS `worker.on('error'|'exit')` listeners fire — so
@@ -29,14 +28,8 @@
 //     the previous contents to the caller. Idempotent: second call is a no-op
 //     (returns null).
 //
-// CROSS-FAMILY ISOLATION:
-// One file per family. When IntentClassifier / LocalEmbeddingProvider /
-// LocalReranker are spawned in the same tick from independent modules, they
-// write to different filenames so concurrent writers don't lose updates
-// (which a single shared JSON file would suffer under read-modify-write).
-// Within a family, the same module's spawn paths coordinate through the
-// read-then-atomic-rename pattern, which is how the shipped Whisper
-// implementation behaves.
+// The same module's spawn paths coordinate through the read-then-atomic-rename
+// pattern.
 //
 // FAIL-OPEN:
 // Every read + write wraps fs in try/catch. A disk-full, permission
@@ -56,7 +49,7 @@ import { app } from 'electron';
  *  from a true native abort, so we never permanently disable a family. */
 export const ONNX_LOAD_SENTINEL_TTL_MS = 5 * 60 * 1000;
 
-export type OnnxFamily = 'whisper' | 'intent' | 'embeddings' | 'reranker';
+export type OnnxFamily = 'whisper';
 
 export interface OnnxLoadSentinel {
     family: OnnxFamily;
@@ -167,9 +160,7 @@ export function clearAllOnnxLoadSentinels(family: OnnxFamily): void {
  * failure cooldown), then removes the file. Idempotent — second call
  * returns null.
  *
- * Each family decides its own recovery: Whisper resets the user setting to
- * `Xenova/whisper-tiny.en`; intent skips ONNX warmup this launch; embeddings
- * seeds the in-memory `nonRecoverableLoadError`; reranker seeds `loadFailed`.
+ * Whisper recovery resets the user setting to `Xenova/whisper-tiny.en`.
  */
 export function consumePoisonedOnnxLoad(family: OnnxFamily): OnnxLoadSentinel | null {
     if (!sentinelEnabled()) return null;

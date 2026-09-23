@@ -4,22 +4,6 @@ import { getPlatformShortcut, isMac } from '../utils/platformUtils';
 
 // Define the shape of our shortcuts configuration
 export interface ShortcutConfig {
-    whatToAnswer: string[];
-    autoAnswerMode: string[];
-    clarify: string[];
-    followUp: string[];
-    dynamicAction4: string[];
-    answer: string[];
-    codeHint: string[];
-    brainstorm: string[];
-    shorten: string[];
-    recap: string[];
-    scrollUp: string[];
-    scrollDown: string[];
-    scrollLeft: string[];
-    scrollRight: string[];
-    focusInput: string[];
-    // Window Movement
     moveWindowUp: string[];
     moveWindowDown: string[];
     moveWindowLeft: string[];
@@ -27,10 +11,6 @@ export interface ShortcutConfig {
     // General
     toggleVisibility: string[];
     toggleMousePassthrough: string[];
-    processScreenshots: string[];
-    captureAndProcess: string[];
-    capturePage: string[];
-    resetCancel: string[];
     takeScreenshot: string[];
     selectiveScreenshot: string[];
 }
@@ -39,31 +19,12 @@ function buildDefaultShortcuts(): ShortcutConfig {
     const mod = isMac ? '⌘' : 'Ctrl';
     const shift = isMac ? '⇧' : 'Shift';
     return {
-        whatToAnswer: [mod, '1'],
-        autoAnswerMode: [mod, 'f'],
-        clarify: [mod, '2'],
-        dynamicAction4: [mod, '3'],
-        followUp: [mod, '4'],
-        answer: [mod, '5'],
-        codeHint: [mod, '6'],
-        brainstorm: [mod, '7'],
-        shorten: [],
-        recap: [],
-        scrollUp: [mod, '↑'],
-        scrollDown: [mod, '↓'],
-        scrollLeft: [mod, isMac ? '⌥' : 'Alt', '←'],
-        scrollRight: [mod, isMac ? '⌥' : 'Alt', '→'],
-        focusInput: [mod, shift, 'Space'],
         moveWindowUp: [mod, shift, '↑'],
         moveWindowDown: [mod, shift, '↓'],
         moveWindowLeft: [mod, shift, '←'],
         moveWindowRight: [mod, shift, '→'],
         toggleVisibility: [mod, 'B'],
         toggleMousePassthrough: [mod, shift, 'B'],
-        processScreenshots: [mod, 'Enter'],
-        captureAndProcess: [mod, shift, 'Enter'],
-        capturePage: [mod, 'Y'],
-        resetCancel: [mod, 'R'],
         takeScreenshot: [mod, 'H'],
         selectiveScreenshot: [mod, shift, 'H']
     };
@@ -87,23 +48,6 @@ export const DEFAULT_SHORTCUTS: ShortcutConfig = buildDefaultShortcuts();
 // backend->frontend state mapper and the registration-failure listener below
 // so both stay in sync as new keybinds are added.
 const BACKEND_ID_TO_ACTION: Partial<Record<string, keyof ShortcutConfig>> = {
-    'chat:whatToAnswer': 'whatToAnswer',
-    'chat:followUp': 'followUp',
-    'chat:followup': 'followUp', // backwards compat
-    'chat:clarify': 'clarify',
-    'chat:dynamicAction4': 'dynamicAction4',
-    'chat:answer': 'answer',
-    'chat:codeHint': 'codeHint',
-    'chat:brainstorm': 'brainstorm',
-    'chat:shorten': 'shorten',
-    'chat:recap': 'recap',
-    'chat:scrollUp': 'scrollUp',
-    'chat:scrollDown': 'scrollDown',
-    'chat:scrollLeft': 'scrollLeft',
-    'chat:scrollRight': 'scrollRight',
-    'chat:focusInput': 'focusInput',
-    'chat:auto-answer-mode': 'autoAnswerMode',
-    // Window
     'window:move-up': 'moveWindowUp',
     'window:move-down': 'moveWindowDown',
     'window:move-left': 'moveWindowLeft',
@@ -111,10 +55,6 @@ const BACKEND_ID_TO_ACTION: Partial<Record<string, keyof ShortcutConfig>> = {
     // General
     'general:toggle-visibility': 'toggleVisibility',
     'general:toggle-mouse-passthrough': 'toggleMousePassthrough',
-    'general:process-screenshots': 'processScreenshots',
-    'general:capture-and-process': 'captureAndProcess',
-    'general:capture-dom': 'capturePage',
-    'general:reset-cancel': 'resetCancel',
     'general:take-screenshot': 'takeScreenshot',
     'general:selective-screenshot': 'selectiveScreenshot',
 };
@@ -263,22 +203,6 @@ export const useShortcuts = () => {
 
         // Map frontend key back to backend ID
         switch (actionId) {
-            case 'whatToAnswer': backendId = 'chat:whatToAnswer'; break;
-            case 'autoAnswerMode': backendId = 'chat:auto-answer-mode'; break;
-            case 'clarify': backendId = 'chat:clarify'; break;
-            case 'followUp': backendId = 'chat:followUp'; break;
-            case 'dynamicAction4': backendId = 'chat:dynamicAction4'; break;
-            case 'answer': backendId = 'chat:answer'; break;
-            case 'codeHint': backendId = 'chat:codeHint'; break;
-            case 'brainstorm': backendId = 'chat:brainstorm'; break;
-            case 'shorten': backendId = 'chat:shorten'; break;
-            case 'recap': backendId = 'chat:recap'; break;
-            case 'scrollUp': backendId = 'chat:scrollUp'; break;
-            case 'scrollDown': backendId = 'chat:scrollDown'; break;
-            case 'scrollLeft': backendId = 'chat:scrollLeft'; break;
-            case 'scrollRight': backendId = 'chat:scrollRight'; break;
-            case 'focusInput': backendId = 'chat:focusInput'; break;
-            // Window
             case 'moveWindowUp': backendId = 'window:move-up'; break;
             case 'moveWindowDown': backendId = 'window:move-down'; break;
             case 'moveWindowLeft': backendId = 'window:move-left'; break;
@@ -286,10 +210,6 @@ export const useShortcuts = () => {
             // General
             case 'toggleVisibility': backendId = 'general:toggle-visibility'; break;
             case 'toggleMousePassthrough': backendId = 'general:toggle-mouse-passthrough'; break;
-            case 'processScreenshots': backendId = 'general:process-screenshots'; break;
-            case 'captureAndProcess': backendId = 'general:capture-and-process'; break;
-            case 'capturePage': backendId = 'general:capture-dom'; break;
-            case 'resetCancel': backendId = 'general:reset-cancel'; break;
             case 'takeScreenshot': backendId = 'general:take-screenshot'; break;
             case 'selectiveScreenshot': backendId = 'general:selective-screenshot'; break;
             default: break;

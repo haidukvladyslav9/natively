@@ -268,7 +268,6 @@ export const PermissionsOnboardingFull: React.FC<Props> = ({ isOpen, onDismiss }
   const handleDismiss = () => {
     if (!canClick) return;
     localStorage.setItem(STORAGE_KEY, '1');
-    window.electronAPI?.onboardingSetFlag?.('permsShown', true).catch(() => {});
     onDismiss();
   };
 

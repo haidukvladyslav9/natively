@@ -21,44 +21,8 @@ export const DEFAULT_KEYBINDS: KeybindConfig[] = [
     // General
     { id: 'general:toggle-visibility', label: 'Toggle Visibility', accelerator: 'CommandOrControl+B', isGlobal: true, defaultAccelerator: 'CommandOrControl+B' },
     { id: 'general:toggle-mouse-passthrough', label: 'Toggle Mouse Passthrough', accelerator: 'CommandOrControl+Shift+B', isGlobal: true, defaultAccelerator: 'CommandOrControl+Shift+B' },
-    { id: 'general:process-screenshots', label: 'Process Screenshots', accelerator: 'CommandOrControl+Enter', isGlobal: true, defaultAccelerator: 'CommandOrControl+Enter' },
-    { id: 'general:capture-and-process', label: 'Capture Screen & Ask AI (Global)', accelerator: 'CommandOrControl+Shift+Enter', isGlobal: true, defaultAccelerator: 'CommandOrControl+Shift+Enter' },
-    { id: 'general:reset-cancel', label: 'Reset / Cancel', accelerator: 'CommandOrControl+R', isGlobal: true, defaultAccelerator: 'CommandOrControl+R' },
     { id: 'general:take-screenshot', label: 'Take Screenshot', accelerator: 'CommandOrControl+H', isGlobal: true, defaultAccelerator: 'CommandOrControl+H' },
     { id: 'general:selective-screenshot', label: 'Selective Screenshot', accelerator: 'CommandOrControl+Shift+H', isGlobal: true, defaultAccelerator: 'CommandOrControl+Shift+H' },
-    // Capture the active browser tab's page context via the companion extension;
-    // falls back to a screenshot when no extension/browser is reachable. Works
-    // from any focused app (including the Natively overlay), which the old
-    // Chrome-owned hotkey could not. See natively-browser/README.md.
-    { id: 'general:capture-dom', label: 'Capture Page / Screen (Browser)', accelerator: 'CommandOrControl+Y', isGlobal: true, defaultAccelerator: 'CommandOrControl+Y' },
-
-    // Chat - Global shortcuts (work even when app is not focused - stealth mode)
-    { id: 'chat:whatToAnswer', label: 'What to Answer', accelerator: 'CommandOrControl+1', isGlobal: true, defaultAccelerator: 'CommandOrControl+1' },
-    { id: 'chat:clarify', label: 'Clarify', accelerator: 'CommandOrControl+2', isGlobal: true, defaultAccelerator: 'CommandOrControl+2' },
-    { id: 'chat:dynamicAction4', label: 'Recap / Brainstorm', accelerator: 'CommandOrControl+3', isGlobal: true, defaultAccelerator: 'CommandOrControl+3' },
-    { id: 'chat:followUp', label: 'Follow Up', accelerator: 'CommandOrControl+4', isGlobal: true, defaultAccelerator: 'CommandOrControl+4' },
-    { id: 'chat:answer', label: 'Answer / Record', accelerator: 'CommandOrControl+5', isGlobal: true, defaultAccelerator: 'CommandOrControl+5' },
-    { id: 'chat:codeHint', label: 'Get Code Hint', accelerator: 'CommandOrControl+6', isGlobal: true, defaultAccelerator: 'CommandOrControl+6' },
-    { id: 'chat:brainstorm', label: 'Brainstorm Approaches', accelerator: 'CommandOrControl+7', isGlobal: true, defaultAccelerator: 'CommandOrControl+7' },
-    // Scroll shortcuts are global so they work in stealth mode without the user
-    // having to click the Natively window first (regression fix for issue #233).
-    // Each press kicks an inertial scroll loop in the renderer: a single tap
-    // glides ~250ms then decelerates, rapid taps sustain motion. macOS Carbon
-    // HotKey API does not auto-repeat with Cmd held, so inertia is what gives
-    // the "hold to scroll" feel without a native key listener.
-    //
-    // Horizontal uses Cmd/Ctrl+Alt+Left/Right to avoid colliding with the macOS
-    // line-start/line-end caret-jump shortcut that would otherwise misfire in
-    // every text input system-wide while Natively is running.
-    { id: 'chat:scrollUp', label: 'Scroll Up', accelerator: 'CommandOrControl+Up', isGlobal: true, defaultAccelerator: 'CommandOrControl+Up' },
-    { id: 'chat:scrollDown', label: 'Scroll Down', accelerator: 'CommandOrControl+Down', isGlobal: true, defaultAccelerator: 'CommandOrControl+Down' },
-    { id: 'chat:scrollLeft', label: 'Scroll Left (code block)', accelerator: 'CommandOrControl+Alt+Left', isGlobal: true, defaultAccelerator: 'CommandOrControl+Alt+Left' },
-    { id: 'chat:scrollRight', label: 'Scroll Right (code block)', accelerator: 'CommandOrControl+Alt+Right', isGlobal: true, defaultAccelerator: 'CommandOrControl+Alt+Right' },
-    // CommandOrControl+Shift+Space because bare Cmd+Space is Spotlight on macOS
-    // and Ctrl+Space is the IME source switcher. The overlay is created with
-    // type:'panel' on macOS, so focusing it does not activate the Natively app —
-    // the user's foreground app keeps focus in the dock/menu bar/screen-share.
-    { id: 'chat:focusInput', label: 'Toggle Stealth Typing', accelerator: 'CommandOrControl+Shift+Space', isGlobal: true, defaultAccelerator: 'CommandOrControl+Shift+Space' },
 
     // Window Movement - Global shortcuts (stealth window positioning)
     { id: 'window:move-up', label: 'Move Window Up', accelerator: 'CommandOrControl+Shift+Up', isGlobal: true, defaultAccelerator: 'CommandOrControl+Shift+Up' },
@@ -103,17 +67,13 @@ export class KeybindManager {
         if (actionId === 'general:toggle-mouse-passthrough') return true;
         if (actionId.startsWith('window:move-')) return true;
 
-        // Screenshot & screen-analyze shortcuts must work globally in BOTH modes.
-        // Without these, Cmd+H / Cmd+Shift+H / Cmd+Shift+Enter do nothing in
+        // Screenshot shortcuts must work globally in BOTH modes.
+        // Without these, Cmd+H / Cmd+Shift+H do nothing in
         // launcher mode because globalShortcut.register() is never called for them.
         // Also fixes the silent rebind failure: re-registration after setKeybind()
         // hit the same gate and dropped the newly bound accelerator too.
         if (actionId === 'general:take-screenshot') return true;
         if (actionId === 'general:selective-screenshot') return true;
-        if (actionId === 'general:capture-and-process') return true;
-        // Browser/page capture must work globally in both modes (same rationale
-        // as the screenshot shortcuts — it's a global capture trigger).
-        if (actionId === 'general:capture-dom') return true;
 
         return false;
     }
@@ -160,17 +120,6 @@ export class KeybindManager {
         try {
             if (fs.existsSync(this.filePath)) {
                 const data = JSON.parse(fs.readFileSync(this.filePath, 'utf-8'));
-
-                // Migrate renamed IDs so saved user customizations survive renames
-                const ID_MIGRATIONS: Record<string, string> = {
-                    'chat:recap': 'chat:dynamicAction4',
-                    'chat:followup': 'chat:followUp',  // casing fix — persisted keybinds.json may have old casing
-                };
-                for (const fileKb of data) {
-                    if (ID_MIGRATIONS[fileKb.id]) {
-                        fileKb.id = ID_MIGRATIONS[fileKb.id];
-                    }
-                }
 
                 // Validate and merge
                 let hadConflicts = false;
